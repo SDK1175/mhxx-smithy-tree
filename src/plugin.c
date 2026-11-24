@@ -43,7 +43,7 @@
 #define CIMGUI_DEFINE_ENUMS_AND_STRUCTS
 #include "cimgui.h"
 
-#define VERSION "0.9.0"
+#define VERSION "0.9.1"
 
 // ------------------------------------------------------------------ the little of libc it needs (no libc here; hidden:
 // not offered to other plugins)
@@ -155,9 +155,15 @@ static uint32_t find_res(uint32_t *slot, uint32_t *tried, const char *path) {
     if (*tried && g_frame - *tried < 180) return 0;  // (a heap search: not every frame)
     *tried = g_frame | 1;
     *slot = mhxx_resource_find(path);
-    char l[120];
+    char l[200];
     Buf b = {l, 0, sizeof l};
     put(&b, "[SmithyTree] "), put(&b, path), put(&b, *slot ? ": found" : ": not loaded (yet)");
+    if (*slot) {
+        uint32_t r = *slot;
+        put(&b, ", "), put_int(&b, (int)G32(r + 0x88)), put(&b, " strings, "), put_int(&b, (int)G32(r + 0x90)),
+            put(&b, " bytes, text "), put_hex(&b, G32(r + 0x94)), put(&b, " pointers "), put_hex(&b, G32(r + 0x98));
+        for (int o = 0x80; o < 0xa0; o += 4) put(&b, " "), put_hex(&b, G32(r + (uint32_t)o));
+    }
     log_line(l);
     return *slot;
 }
@@ -199,8 +205,19 @@ static void skill_name(uint32_t id, char *out, uint32_t cap) {
     }
 }
 static void armor_name(uint32_t series, int piece, char *out, uint32_t cap) {
-    if (!msg_get(find_res(&g_res_armor, &g_try_armor, "table\\armorSeriesData_jpn"), series * 10 + (uint32_t)piece, out,
-                 cap)) {
+    uint32_t r = find_res(&g_res_armor, &g_try_armor, "table\\armorSeriesData_jpn"), i = series * 10 + (uint32_t)piece;
+    static bool told;
+    if (r && !told) {  // (once: what the string looks like where a piece's name should be)
+        told = true;
+        char l[300];
+        Buf b = {l, 0, sizeof l};
+        uint32_t text = G32(r + 0x94), arr = G32(r + 0x98), sp = arr ? G32(arr + 4 * i) : 0;
+        put(&b, "[SmithyTree] armor name "), put_int(&b, (int)i), put(&b, ": pointer "), put_hex(&b, sp), put(&b, " (text "),
+            put_hex(&b, text), put(&b, "), bytes");
+        for (int k = 0; k < 16 && sp; k++) put(&b, " "), put_int(&b, G8(sp + (uint32_t)k));
+        log_line(l);
+    }
+    if (!msg_get(r, i, out, cap)) {
         Buf b = {out, 0, cap};
         put(&b, "#"), put_int(&b, (int)series);
     }
@@ -540,13 +557,15 @@ static void text_o(float x, float y, float scale, ImU32 col, const char *s) {  /
     ImDrawList_AddText_FontPtr(g_dl, igGetFont(), g_fs * scale, V2(x + 1.5f, y + 1.5f), 0xc0000000, s, NULL, 0.0f, NULL);
     ImDrawList_AddText_FontPtr(g_dl, igGetFont(), g_fs * scale, V2(x, y), col, s, NULL, 0.0f, NULL);
 }
-static float text_w(const char *s, float scale) { return igCalcTextSize(s, NULL, false, -1.0f).x * scale; }
+static float text_w(const char *s, float scale) {  // (measured at the font's size, drawn at g_fs x scale)
+    return igCalcTextSize(s, NULL, false, -1.0f).x * scale * g_fs / igGetFontSize();
+}
 static void text_r(float xr, float y, float scale, ImU32 col, const char *s) { text_o(xr - text_w(s, scale), y, scale, col, s); }
 
 #define COL_TEAL 0xff7a7a2c
 #define COL_GOLD 0xff38c8f0
 #define COL_RED 0xff1010c0
-#define COL_TAN 0xf07ea8c4
+#define COL_TAN 0xff7ea8c4
 #define COL_TAN_DARK 0xf0688ea8
 #define COL_HEAD 0xff32c0fa  // (headings: the game's orange)
 #define COL_HAVE 0xff40e060
@@ -845,7 +864,7 @@ static void weapon_input(void) {
 }
 
 static void draw_weapon_tree(float x0, float y0, float x1, float y1) {
-    frame(x0, y0, x1, y1, 0xf0141416);
+    frame(x0, y0, x1, y1, 0xff141416);
     char line[96], nm[96];
     Buf b = {line, 0, sizeof line};
     float hy = y0 + g_fs * 0.35f, hh = g_fs * 1.25f;  // (the rarities' header)
@@ -854,7 +873,8 @@ static void draw_weapon_tree(float x0, float y0, float x1, float y1) {
     float colw = (gx1 - gx0) / (float)(g_ncols < 5 ? 5 : g_ncols), rowh = g_fs * 2.35f, hs = g_fs * 0.8f;
     for (int r = 1; r <= g_ncols; r++) {
         float cx = gx0 + colw * ((float)r - 0.5f);
-        b.n = 0, put(&b, "레어 "), put_int(&b, r);
+        b.n = 0, put(&b, r == g_ncols && colw < g_fs * 3.2f ? "" : "레어 "), put_int(&b, r);
+        if (colw < g_fs * 3.2f) b.n = 0, put_int(&b, r);
         float tw = text_w(line, 0.72f);
         ImDrawList_AddRect(g_dl, V2(cx - tw * 0.5f - 4, hy + 2), V2(cx + tw * 0.5f + 4, hy + hh - 3), rare_colour(r), 0, 1.0f, 0);
         text_s(cx - tw * 0.5f, hy + g_fs * 0.22f, 0.72f, rare_colour(r), line);
@@ -1028,7 +1048,7 @@ static void armor_from_game(void) {
     static uint16_t from_id, from_cat;
     if (g_arank >= 0 && g_now.id == from_id && g_now.category == from_cat) return;
     from_id = g_now.id, from_cat = g_now.category;
-    g_arank = rank_of(g_now.id), g_apiece = g_now.category < 5 ? g_now.category : 0, g_arow = 0;
+    g_arank = rank_of(g_now.id), g_apiece = g_now.category >= 1 && g_now.category <= 5 ? g_now.category - 1 : 0, g_arow = 0;
     armor_rows(g_arank);
     for (int i = 0; i < g_narank; i++)
         if (g_arow_of[i] == g_now.id) g_arow = i;
@@ -1066,7 +1086,7 @@ static void armor_input(void) {
 }
 
 static void draw_armor_grid(float x0, float y0, float x1, float y1) {
-    frame(x0, y0, x1, y1, 0xf0141416);
+    frame(x0, y0, x1, y1, 0xff141416);
     static const char *const RANK[3] = {"하위", "상위", "G급"};
     float ty = y0 + g_fs * 0.35f, th = g_fs * 1.3f;
     ImDrawList_AddRectFilled(g_dl, V2(x0 + 3, ty - g_fs * 0.1f), V2(x1 - 3, ty + th), 0xff24244e, 0, 0);
@@ -1365,7 +1385,7 @@ void forge_onImGuiFreeRender(void) {
         return;
     }
     int cat = g_now.category;
-    bool weapons = cat >= 7 && cat - 7 < TYPES && cat - 7 != 5, armor = cat < 7;
+    bool weapons = cat >= 7 && cat - 7 < TYPES && cat - 7 != 5, armor = cat >= 1 && cat <= 5;
     if (!weapons && !armor) return;
     // After A or B the game has the controller (its confirmation, its Back): the screen comes back by itself when the
     // game is on this list again, after it was somewhere else.
@@ -1396,6 +1416,7 @@ void forge_onImGuiFreeRender(void) {
     }
     // the game's own 3D preview stays (its parchment on the left), so do its message box, money and buttons
     float ty0 = H * 0.185f, ty1 = H * 0.735f;
+    ImDrawList_AddRectFilled(g_dl, V2(W * 0.262f, H * 0.172f), V2(W * 0.995f, ty1 + H * 0.012f), 0xff0c0a08, 0, 0);
     if (weapons) {
         if (!load_type(cat - 7)) return;
         if (g_now.category != g_game_cat || g_now.id != g_game_id || g_cw < 0 || g_cw >= (int)g_nbase || !g_w[g_cw].top) {
