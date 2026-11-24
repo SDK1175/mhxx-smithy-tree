@@ -43,7 +43,7 @@
 #define CIMGUI_DEFINE_ENUMS_AND_STRUCTS
 #include "cimgui.h"
 
-#define VERSION "0.11.0"
+#define VERSION "0.11.1"
 
 // ------------------------------------------------------------------ the little of libc it needs (no libc here; hidden:
 // not offered to other plugins)
@@ -1414,107 +1414,91 @@ static uint16_t g_conf_state;
 static uint32_t g_conf_t;
 static bool g_conf_had;
 
-static void conf_card(float x0, float y0, float x1, float y1, const char *name, int rare, const char *own, int atk, int atk0,
-                      int slots, int sharp, bool weapon, int piece) {
-    float bh = g_fs * 2.6f;
-    red_bar(x0, y0, x1, y0 + bh);
-    if (weapon) glyph_weapon(x0 + g_fs * 1.9f, y0 + bh * 0.5f, g_fs * 0.7f, rare_colour(rare));
-    else glyph_armor(x0 + g_fs * 1.9f, y0 + bh * 0.5f, g_fs * 0.75f, piece, rare_colour(rare));
-    text_o(x0 + g_fs * 3.0f, y0 + g_fs * 0.25f, 1.05f, 0xffffffff, name);
-    char line[64];
-    Buf b = {line, 0, sizeof line};
-    put(&b, "RARE "), put_int(&b, rare);
-    text_o(x0 + g_fs * 3.0f, y0 + g_fs * 1.35f, 0.85f, 0xfff0f0f0, line);
-    text_r(x1 - g_fs * 1.6f, y0 + g_fs * 1.35f, 0.85f, 0xfff0f0f0, own);
-    float py = y0 + bh + g_fs * 0.3f, ph = (y1 - py) * 0.58f;
-    tan_box(x0 + g_fs * 0.3f, py, x1 - g_fs * 0.3f, py + ph);  // (the picture's place: the weapon's glyph, large)
-    if (weapon) glyph_weapon((x0 + x1) * 0.5f, py + ph * 0.5f, ph * 0.32f, rare_colour(rare));
-    else glyph_armor((x0 + x1) * 0.5f, py + ph * 0.5f, ph * 0.3f, piece, rare_colour(rare));
-    float sy = py + ph + g_fs * 0.4f, x = x0 + g_fs * 1.2f, xv = x0 + (x1 - x0) * 0.45f, xr = x1 - g_fs * 1.2f;
-    tan_box(x0 + g_fs * 0.3f, sy - g_fs * 0.2f, x1 - g_fs * 0.3f, y1);
-    if (atk >= 0) {
-        text_o(x, sy, 1.0f, 0xfff4f4f4, weapon ? "공격력" : "방어력");
-        b.n = 0, put_int(&b, atk);
-        text_o(xv, sy, 1.0f, 0xfff4f4f4, line);
-        if (atk0 >= 0 && atk != atk0) {
-            b.n = 0, put(&b, atk > atk0 ? "+" : ""), put_int(&b, atk - atk0);
-            text_o(xv + (xr - xv) * 0.5f, sy, 1.0f, atk > atk0 ? COL_HAVE : COL_LACK, line);
-        }
-        tan_rule(x, xr, sy + g_fs * 1.3f);
-    }
-    sy += g_fs * 1.6f;
-    text_o(x, sy, 1.0f, 0xfff4f4f4, "슬롯");
-    slots_draw(xv, sy + g_fs * 0.55f, slots);
-    sy += g_fs * 1.6f;
-    if (weapon && sharp >= 0) {
-        tan_rule(x, xr, sy - g_fs * 0.3f);
-        text_o(x, sy, 1.0f, 0xfff4f4f4, "예리도");
-        sharpness_bar(xv, sy + g_fs * 0.3f, xr - xv, g_fs * 0.55f, (uint32_t)sharp);
-    }
-    frame(x0, y0, x1, y1, 0);
-}
-
+// one window in MHXX's own style (its blue column heads "필요 소재 이름 / 소지수/필요수"), the 3D preview left seen
 static void draw_confirm(float W, float H) {
-    ImDrawList_AddRectFilled(g_dl, V2(0, H * 0.1f), V2(W, H * 0.74f), 0xd0000000, 0, 0);
-    float y0 = H * 0.13f, y1 = H * 0.66f, lx0 = W * 0.055f, lx1 = W * 0.46f, rx0 = W * 0.54f, rx1 = W * 0.945f;
+    ImDrawList_AddRectFilled(g_dl, V2(W * 0.262f, H * 0.1f), V2(W, H * 0.9f), 0xb0000000, 0, 0);
+    float x0 = W * 0.30f, x1 = W * 0.80f, y0 = H * 0.20f, y1 = H * 0.72f;
+    frame(x0, y0, x1, y1, 0xff2a1e12);
     char nm[96], line[160];
     Buf b = {line, 0, sizeof line};
-    int cost = -1;
+    float x = x0 + g_fs * 1.0f, xr = x1 - g_fs * 1.0f, y = y0 + g_fs * 0.7f;
+    // the title row: what is made
+    int rare = 1, atk = -1, slots = 0, sharp = -1, cost = -1, piece = g_conf_piece;
+    const uint8_t *mats = NULL;
+    int n = 0, stride = 4;
     if (g_conf_kind == 0) {
-        const Weapon *wp = &g_w[g_conf_id];
-        const uint8_t *e1 = level_of((uint32_t)g_conf_id, 1), *b0 = base_of((uint32_t)g_conf_id);
+        const uint8_t *e1 = level_of((uint32_t)g_conf_id, 1), *b0 = base_of((uint32_t)g_conf_id), *c = create_of((uint32_t)g_conf_id);
         bool gun = gunner(g_type);
-        int atk = e1 ? (int)(gun ? rd16(e1 + 6) : rd16(e1 + 8)) : -1, sl = e1 && !gun ? e1[LEVEL_STRIDE[g_type] - 1] : 0;
-        cost = b0 ? (int)rd32(b0 + 0xc) : -1;
-        // left: what it is made from (its materials), right: the weapon
-        frame(lx0, y0, lx1, y1, 0xff141416);
-        red_bar(lx0, y0, lx1, y0 + g_fs * 2.6f);
-        text_o(lx0 + g_fs * 1.5f, y0 + g_fs * 0.7f, 1.05f, 0xffffffff, "필요 소재");
-        tan_box(lx0 + g_fs * 0.3f, y0 + g_fs * 2.9f, lx1 - g_fs * 0.3f, y1);
-        const uint8_t *c = create_of((uint32_t)g_conf_id);
-        if (c) mat_list(lx0 + g_fs * 1.0f, lx1 - g_fs * 1.0f, y0 + g_fs * 3.3f, c + 6, 4, 4, 1, NULL);
-        frame(lx0, y0, lx1, y1, 0);
+        rare = g_w[g_conf_id].rare, atk = e1 ? (int)(gun ? rd16(e1 + 6) : rd16(e1 + 8)) : -1;
+        slots = e1 && !gun ? e1[LEVEL_STRIDE[g_type] - 1] : 0, sharp = e1 && !gun ? e1[6] : -1;
+        cost = b0 ? (int)rd32(b0 + 0xc) : -1, mats = c ? c + 6 : NULL, n = 4;
         weapon_name(g_type, (uint32_t)g_conf_id, 0, nm, sizeof nm);
-        conf_card(rx0, y0, rx1, y1, nm, wp->rare, owned(g_type + 7, (uint32_t)g_conf_id) ? "보유 중" : "미보유", atk, -1, sl,
-                  e1 && !gun ? e1[6] : -1, true, 0);
     } else {
-        const uint8_t *a = aser((uint32_t)g_conf_id), *c = acreate((uint32_t)g_conf_id, g_conf_piece);
-        frame(lx0, y0, lx1, y1, 0xff141416);
-        red_bar(lx0, y0, lx1, y0 + g_fs * 2.6f);
-        text_o(lx0 + g_fs * 1.5f, y0 + g_fs * 0.7f, 1.05f, 0xffffffff, "필요 소재");
-        tan_box(lx0 + g_fs * 0.3f, y0 + g_fs * 2.9f, lx1 - g_fs * 0.3f, y1);
-        if (c) mat_list(lx0 + g_fs * 1.0f, lx1 - g_fs * 1.0f, y0 + g_fs * 3.3f, c + 10, 5, 4, 1, NULL);
-        frame(lx0, y0, lx1, y1, 0);
-        armor_name((uint32_t)g_conf_id, g_conf_piece, nm, sizeof nm);
-        conf_card(rx0, y0, rx1, y1, nm, a ? a[0x67] + 1 : 1, owned(g_conf_piece + 1, (uint32_t)g_conf_id) ? "보유 중" : "미보유",
-                  a ? a[0x6a] : -1, -1, a ? a[0x6c + g_conf_piece] : 0, -1, false, g_conf_piece);
+        const uint8_t *a = aser((uint32_t)g_conf_id), *c = acreate((uint32_t)g_conf_id, piece);
+        rare = a ? a[0x67] + 1 : 1, atk = a ? a[0x6a] : -1, slots = a ? a[0x6c + piece] : 0;
+        mats = c ? c + 10 : NULL, n = 5;
+        armor_name((uint32_t)g_conf_id, piece, nm, sizeof nm);
     }
-    // the arrows and the cost between the cards
-    float mx = W * 0.5f, my = (y0 + y1) * 0.45f, k = g_fs * 1.3f;
-    for (int i = 0; i < 2; i++) {
-        float ox = mx - k * 0.9f + i * k * 0.8f;
-        ImDrawList_AddLine(g_dl, V2(ox, my - k), V2(ox + k * 0.7f, my), COL_GOLD, g_fs * 0.4f);
-        ImDrawList_AddLine(g_dl, V2(ox + k * 0.7f, my), V2(ox, my + k), COL_GOLD, g_fs * 0.4f);
+    float ih = g_fs * 1.4f;
+    ImDrawList_AddRectFilled(g_dl, V2(x - g_fs * 0.3f, y - g_fs * 0.2f), V2(x + ih * 2, y + ih * 1.6f), 0xff101010, 0, 0);
+    if (g_conf_kind == 0) glyph_weapon(x + ih, y + ih * 0.7f, ih * 0.7f, rare_colour(rare));
+    else glyph_armor(x + ih, y + ih * 0.7f, ih * 0.7f, piece, rare_colour(rare));
+    text_o(x + ih * 2.5f, y - g_fs * 0.1f, 1.25f, 0xffffffff, nm);
+    b.n = 0, put(&b, "RARE "), put_int(&b, rare), put(&b, "   LV 1");
+    text_o(x + ih * 2.5f, y + g_fs * 1.35f, 0.9f, rare_colour(rare), line);
+    y += ih * 2.0f;
+    ImDrawList_AddLine(g_dl, V2(x0 + 4, y), V2(x1 - 4, y), COL_TEAL, 2.0f);
+    y += g_fs * 0.4f;
+    // stats, as the game's info panel: blue names, white values
+    ImU32 blue = 0xffffa040;
+    text_o(x, y, 1.0f, blue, g_conf_kind == 0 ? "공격력" : "방어력");
+    b.n = 0, put_int(&b, atk);
+    text_o(x + g_fs * 5.0f, y, 1.0f, 0xffffffff, line);
+    text_o(x + (xr - x) * 0.5f, y, 1.0f, blue, "슬롯");
+    slots_draw(x + (xr - x) * 0.5f + g_fs * 2.6f, y + g_fs * 0.6f, slots);
+    y += g_fs * 1.4f;
+    if (sharp >= 0) {
+        text_o(x, y, 1.0f, blue, "베는맛");
+        sharpness_bar(x + g_fs * 5.0f, y + g_fs * 0.35f, (xr - x) * 0.6f, g_fs * 0.55f, (uint32_t)sharp);
+        y += g_fs * 1.4f;
     }
+    ImDrawList_AddLine(g_dl, V2(x0 + 4, y), V2(x1 - 4, y), COL_TEAL, 2.0f);
+    y += g_fs * 0.4f;
+    // the materials: the game's columns, have / need
+    text_o(x, y, 1.0f, blue, "필요 소재 이름");
+    text_r(xr, y, 1.0f, blue, "소지수/필요수");
+    y += g_fs * 1.35f;
+    for (int k = 0; mats && k < n; k++) {
+        const uint8_t *m = mats + k * stride;
+        uint32_t it = rd16(m), q = m[2];
+        if (!it || !q) continue;
+        int r = it < ITEMS ? g_item_rare[it] : 1;
+        ImDrawList_AddRectFilled(g_dl, V2(x, y + g_fs * 0.2f), V2(x + g_fs * 0.8f, y + g_fs), rare_colour(r), g_fs * 0.1f, 0);
+        item_name(it, nm, sizeof nm);
+        text_o(x + g_fs * 1.2f, y, 1.0f, 0xffffffff, nm);
+        uint32_t have = g_have[it];
+        b.n = 0, put_int(&b, (int)have), put(&b, " / "), put_int(&b, (int)q);
+        text_r(xr, y, 1.0f, have >= q ? 0xffffffff : COL_LACK, line);
+        y += g_fs * 1.3f;
+        ImDrawList_AddLine(g_dl, V2(x, y - g_fs * 0.1f), V2(xr, y - g_fs * 0.1f), 0x40ffffff, 1.0f);
+    }
+    // the cost and Yes / No, at the window's foot
+    float fy = y1 - g_fs * 2.6f;
+    ImDrawList_AddRectFilled(g_dl, V2(x0 + 4, fy), V2(x1 - 4, y1 - 4), 0xff1c140c, 0, 0);
     if (cost >= 0) {
-        b.n = 0, put_int(&b, cost), put(&b, "z");
-        text_o(mx - text_w(line, 1.0f) * 0.5f, my + k * 1.4f, 1.0f, COL_GOLD, line);
+        b.n = 0, put(&b, "비용 "), put_int(&b, cost), put(&b, "z");
+        text_o(x, fy + g_fs * 0.7f, 1.05f, COL_GOLD, line);
     }
-    // the question, in a box where the game's message box is
-    float qx0 = W * 0.012f, qx1 = W * 0.36f, qy0 = H * 0.755f, qy1 = H * 0.86f;
-    frame(qx0, qy0, qx1, qy1, 0xff141416);
-    b.n = 0, put(&b, "필요한 소재");
-    if (cost >= 0) put(&b, "와 "), put_int(&b, cost), put(&b, "z");
-    put(&b, "를 사용해서 생산할까요?");
-    if (g_conf >= 2) b.n = 0, put(&b, "생산하는 중...");
-    text_o(qx0 + g_fs, qy0 + g_fs * 0.6f, 1.0f, 0xfff4f4f4, line);
     if (g_conf == 1) {
-        float ay = qy0 + g_fs * 2.2f, yx = qx0 + (qx1 - qx0) * 0.38f, nx = qx0 + (qx1 - qx0) * 0.68f;
-        float sx = g_conf_yes ? yx : nx;
-        text_o(sx - g_fs * 1.4f, ay, 1.1f, COL_GOLD, ">");
-        text_o(yx, ay, 1.1f, g_conf_yes ? 0xffffffff : 0xffa0a0a0, "예");
-        text_o(nx, ay, 1.1f, g_conf_yes ? 0xffa0a0a0 : 0xffffffff, "아니오");
-    }
+        static const char *const L[2] = {"생산한다", "그만둔다"};
+        for (int i = 0; i < 2; i++) {
+            bool on = (i == 0) == (g_conf_yes != 0);
+            float bx1 = xr - (float)(1 - i) * g_fs * 7.4f, bx0 = bx1 - g_fs * 6.8f;
+            ImDrawList_AddRectFilled(g_dl, V2(bx0, fy + g_fs * 0.4f), V2(bx1, fy + g_fs * 2.1f), on ? COL_RED : 0xff3a3a3a, 0, 0);
+            if (on) ImDrawList_AddRect(g_dl, V2(bx0, fy + g_fs * 0.4f), V2(bx1, fy + g_fs * 2.1f), COL_GOLD, 0, 2.0f, 0);
+            text_o(bx0 + (bx1 - bx0 - text_w(L[i], 1.0f)) * 0.5f, fy + g_fs * 0.7f, 1.0f, on ? 0xffffffff : 0xffb0b0b0, L[i]);
+        }
+    } else text_r(xr, fy + g_fs * 0.7f, 1.05f, 0xffffffff, "생산하는 중...");
 }
 
 static void conf_log(const char *what, uint16_t state) {
