@@ -43,7 +43,7 @@
 #define CIMGUI_DEFINE_ENUMS_AND_STRUCTS
 #include "cimgui.h"
 
-#define VERSION "0.7.0"
+#define VERSION "0.8.0"
 
 // ------------------------------------------------------------------ the little of libc it needs (no libc here; hidden:
 // not offered to other plugins)
@@ -882,11 +882,6 @@ static void draw_weapon_detail(float x0, float y0, float x1, float y1, int w, in
         text_s(x, y, 0.8f, here ? 0xff70e8ff : 0xff909090, line), y += g_fs * 0.9f;
         text_s(x + g_fs * 0.5f, y, 0.85f, here ? 0xff70e8ff : 0xffc8c8c8, nm), y += g_fs * 1.1f;
     }
-    if (y < y1 - g_fs * 2.4f) {
-        text_s(x, y1 - g_fs * 2.3f, 0.75f, 0xff808080, "R스틱: 트리 이동");
-        text_s(x, y1 - g_fs * 1.3f, 0.75f, 0xff808080, "R3: 트리 숨기기/보이기");
-    }
-}
 
 // ---- armor
 static void draw_armor(float tx0, float tx1, float cx1, float y0, float y1, uint32_t sel, int piece) {
@@ -1044,15 +1039,23 @@ void forge_onImGuiFreeRender(void) {
     static uint32_t last;
     bool fresh = last != g_frame;  // (input: once a game frame)
     last = g_frame;
-    if (!g_original || g_frame - g_seen_frame > 2 || !g_now.id) {  // (the smithy not open: the screen opens with it)
+    if (!g_original || g_frame - g_seen_frame > 2 || !g_now.id) {  // (the smithy not open, or a screen without a list)
         if (g_frame - g_seen_frame > 2) g_hidden = false, g_view = -1;
         return;
     }
     int cat = g_now.category;
     bool weapons = cat >= 7 && cat - 7 < TYPES && cat - 7 != 5, armor = cat < 7;
     if (!weapons && !armor) return;
-    if (fresh && forge_input_isPressed(5)) g_hidden = !g_hidden;  // (R3: the screen, or the game's own)
-    if (g_hidden) return;
+    // After A or B the game has the controller (its confirmation, its Back): the screen comes back by itself when the
+    // game is on this list again, after it was somewhere else.
+    static uint16_t hid_at;
+    static bool left;
+    uint16_t state = (uint16_t)(g_now.screen << 8 | g_now.sub);
+    if (g_hidden) {
+        if (state != hid_at) left = true;
+        else if (left) g_hidden = false;
+        if (g_hidden) return;
+    }
     mhxx_input_capture(150);  // (the controller is the screen's while it is up)
     float y0 = H * 0.11f, y1 = H * 0.86f;
     // the game's own 3D preview of the weapon stays seen (its frame on the left): the backdrop round it
@@ -1067,8 +1070,9 @@ void forge_onImGuiFreeRender(void) {
     read_box();
     log_box_once();
     int dir = fresh ? pad_dir() : 0;
-    if (fresh && forge_input_isPressed(1)) {  // (B: back to the game's own screen)
-        g_hidden = true;
+    if (fresh && forge_input_isPressed(1)) {  // (B: the game's Back - to the weapon types)
+        g_hidden = true, hid_at = state, left = false;
+        mhxx_input_capture(0);
         return;
     }
     if (weapons) {
@@ -1087,10 +1091,14 @@ void forge_onImGuiFreeRender(void) {
         }
         cursor_move(dir);
         g_want_id = g_view == cat - 7 ? g_cw : -1;  // (the game's list follows: its 3D preview shows the weapon)
-        if (fresh && forge_input_isPressed(0)) {  // (A: back to the game's list, on this weapon, to make or upgrade it)
-            if (g_view != cat - 7) toast("게임 목록의 무기 종류가 달라요: 게임 화면에서 종류를 바꾼 뒤 다시 열어 주세요 (R3)");
-            else if (g_want_result < 0) toast("이 무기는 지금 게임 목록에 없어요 (해금 전이거나 다른 페이지)");
-            else g_hidden = true;
+        if (fresh && forge_input_isPressed(0)) {  // (A: the game's own A on this weapon - to make or upgrade it)
+            if (g_view != cat - 7) toast("이 무기 종류는 게임에서 고르지 않았어요: B로 나가서 종류를 고른 뒤 만들 수 있어요");
+            else if (g_want_result < 0) toast("이 무기는 지금 목록에 없어서 만들 수 없어요 (해금 전이거나 목록의 다른 페이지)");
+            else {
+                g_hidden = true, hid_at = state, left = false;
+                mhxx_input_capture(0);
+                return;
+            }
         }
         draw_weapon_tree(W * 0.265f, y0, W * 0.70f, y1);
         draw_weapon_detail(W * 0.707f, y0, W * 0.985f, H * 0.47f, g_cw, g_clv);
@@ -1103,11 +1111,11 @@ void forge_onImGuiFreeRender(void) {
             text_s(px0 + g_fs * 0.7f, ly + g_fs * 0.5f, 1.05f, rare_colour(g_w[g_cw].rare), nm);
             const char *st = g_view != cat - 7 ? "미리보기: 게임 목록과 무기 종류가 달라요"
                              : g_want_result < 0 ? "미리보기: 게임 목록에 없는 무기"
-                                                 : "미리보기: 이 무기  (A: 게임 목록으로)";
+                                                 : "A: 이 무기 생산 / 강화";
             text_s(px0 + g_fs * 0.7f, ly + g_fs * 1.9f, 0.82f, 0xffa0a0a0, st);
         }
         help_line(W, y1 + H * 0.012f,
-                  "방향키/스틱: 이동    L / R: 무기 종류    A: 이 무기로 게임 화면에 돌아가기 (생산 / 강화)    B: 닫기    R3: 열기 / 닫기");
+                  "방향키/스틱: 이동    L / R: 무기 종류    A: 생산 / 강화    B: 뒤로");
     } else {
         if (!load_armor() || g_now.id >= g_naser) return;
         static int sel_row = -1, piece = 0;
@@ -1122,6 +1130,6 @@ void forge_onImGuiFreeRender(void) {
         if (dir == 3 && sel_row > 0) sel_row--;
         if (dir == 4 && sel_row + 1 < g_narows) sel_row++;
         draw_armor(W * 0.015f, W * 0.6f, W * 0.985f, y0, y1, g_arows[sel_row], piece);
-        help_line(W, y1 + H * 0.012f, "방향키/스틱: 이동 (위아래 시리즈, 좌우 부위)    B: 닫기    R3: 열기 / 닫기");
+        help_line(W, y1 + H * 0.012f, "방향키/스틱: 이동 (위아래 시리즈, 좌우 부위)    B: 뒤로");
     }
 }
