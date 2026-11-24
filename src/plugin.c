@@ -43,7 +43,7 @@
 #define CIMGUI_DEFINE_ENUMS_AND_STRUCTS
 #include "cimgui.h"
 
-#define VERSION "0.4.0"
+#define VERSION "0.5.0"
 
 // ------------------------------------------------------------------ the little of libc it needs (no libc here; hidden:
 // not offered to other plugins)
@@ -512,9 +512,16 @@ static void text_s(float x, float y, float scale, ImU32 col, const char *s) {
     ImDrawList_AddText_FontPtr(g_dl, igGetFont(), g_fs * scale, V2(x, y), col, s, NULL, 0.0f, NULL);
 }
 static float text_w(const char *s) { return igCalcTextSize(s, NULL, false, -1.0f).x; }
-static void panel(float x0, float y0, float x1, float y1) {
-    ImDrawList_AddRectFilled(g_dl, V2(x0, y0), V2(x1, y1), 0xec141210, g_fs * 0.4f, 0);
-    ImDrawList_AddRect(g_dl, V2(x0, y0), V2(x1, y1), 0xff3a6a98, g_fs * 0.4f, 1.5f, 0);
+static void panel(float x0, float y0, float x1, float y1) {  // (MHXX's own frames: navy, a teal edge, gold corners)
+    float r = g_fs * 0.25f, c = g_fs * 0.7f;
+    ImDrawList_AddRectFilledMultiColor(g_dl, V2(x0, y0), V2(x1, y1), 0xff2e2214, 0xff2e2214, 0xff1a130b, 0xff1a130b);
+    ImDrawList_AddRect(g_dl, V2(x0, y0), V2(x1, y1), 0xffa89040, r, 2.0f, 0);
+    ImDrawList_AddRect(g_dl, V2(x0 + 4, y0 + 4), V2(x1 - 4, y1 - 4), 0x80a89040, r, 1.0f, 0);
+    ImU32 g = 0xff58b8d8;
+    ImDrawList_AddLine(g_dl, V2(x0 - 1, y0 + c), V2(x0 - 1, y0 - 1), g, 3.0f), ImDrawList_AddLine(g_dl, V2(x0 - 1, y0 - 1), V2(x0 + c, y0 - 1), g, 3.0f);
+    ImDrawList_AddLine(g_dl, V2(x1 + 1, y0 + c), V2(x1 + 1, y0 - 1), g, 3.0f), ImDrawList_AddLine(g_dl, V2(x1 + 1, y0 - 1), V2(x1 - c, y0 - 1), g, 3.0f);
+    ImDrawList_AddLine(g_dl, V2(x0 - 1, y1 - c), V2(x0 - 1, y1 + 1), g, 3.0f), ImDrawList_AddLine(g_dl, V2(x0 - 1, y1 + 1), V2(x0 + c, y1 + 1), g, 3.0f);
+    ImDrawList_AddLine(g_dl, V2(x1 + 1, y1 - c), V2(x1 + 1, y1 + 1), g, 3.0f), ImDrawList_AddLine(g_dl, V2(x1 + 1, y1 + 1), V2(x1 - c, y1 + 1), g, 3.0f);
 }
 static void rule(float x0, float x1, float y) { ImDrawList_AddLine(g_dl, V2(x0, y), V2(x1, y), 0x40ffffff, 1.0f); }
 
@@ -682,7 +689,7 @@ static void draw_weapon_tree(float x0, float y0, float x1, float y1) {
         if (ya < top) ya = top;
         if (yb > y1 - 2) yb = y1 - 2;
         bool here = g_w[g_cw].root == w;
-        ImDrawList_AddRectFilled(g_dl, V2(x0 + 2, ya + 1), V2(x1 - 2, yb - 1), here ? 0x30406080 : (i & 1) ? 0x14ffffff : 0x08ffffff,
+        ImDrawList_AddRectFilled(g_dl, V2(x0 + 2, ya + 1), V2(x1 - 2, yb - 1), here ? 0x40306878 : (i & 1) ? 0x14ffffff : 0x08ffffff,
                                  0, 0);
         ImDrawList_AddLine(g_dl, V2(x0 + 2, yb), V2(x1 - 2, yb), 0x30ffffff, 1.0f);
         weapon_name(g_type, (uint32_t)w, 0, nm, sizeof nm);
@@ -990,6 +997,7 @@ void forge_onImGuiFreeRender(void) {
     float W = io->DisplaySize.x, H = io->DisplaySize.y;
     g_dl = igGetForegroundDrawList_Nil(), g_fs = igGetFontSize();
     float y0 = H * 0.125f, y1 = H * 0.875f;
+    ImDrawList_AddRectFilled(g_dl, V2(0, y0 - H * 0.015f), V2(W, y1 + H * 0.015f), 0xff0c0805, 0, 0);
     read_box();
     log_box_once();
     int cat = g_now.category;
@@ -1003,6 +1011,6 @@ void forge_onImGuiFreeRender(void) {
         draw_weapon_detail(W * 0.797f, y0, W * 0.985f, y1, g_cw, g_clv);
     } else if (cat < 7) {
         if (!load_armor() || g_now.id >= g_naser) return;
-        draw_armor(W * 0.265f, W * 0.655f, W * 0.985f, y0, y1, g_now.id, cat < 5 ? cat : -1);
+        draw_armor(W * 0.015f, W * 0.6f, W * 0.985f, y0, y1, g_now.id, cat < 5 ? cat : -1);
     }
 }
