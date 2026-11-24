@@ -43,7 +43,7 @@
 #define CIMGUI_DEFINE_ENUMS_AND_STRUCTS
 #include "cimgui.h"
 
-#define VERSION "0.10.0"
+#define VERSION "0.11.0"
 
 // ------------------------------------------------------------------ the little of libc it needs (no libc here; hidden:
 // not offered to other plugins)
@@ -1404,6 +1404,167 @@ static void bottom(float W, float H, bool weapons) {
     text_o(kx + g_fs * 2.0f, by0 + g_fs * 0.55f, 0.95f, ready ? COL_HAVE : 0xfff0f0f0, line);
 }
 
+
+// ------------------------------------------------------------------ the confirmation (the reference's compare screen):
+// before >> after, the cost, Yes / No. Yes is the game's own crafting: the screen presses the game's A on its list (the
+// list's cursor is on the weapon), then its Yes, then lets its messages go - the game makes it, takes the materials.
+void mhxx_input_press(uint32_t buttons, uint32_t ms);
+static int g_conf, g_conf_yes, g_conf_presses, g_conf_kind, g_conf_id, g_conf_piece;
+static uint16_t g_conf_state;
+static uint32_t g_conf_t;
+static bool g_conf_had;
+
+static void conf_card(float x0, float y0, float x1, float y1, const char *name, int rare, const char *own, int atk, int atk0,
+                      int slots, int sharp, bool weapon, int piece) {
+    float bh = g_fs * 2.6f;
+    red_bar(x0, y0, x1, y0 + bh);
+    if (weapon) glyph_weapon(x0 + g_fs * 1.9f, y0 + bh * 0.5f, g_fs * 0.7f, rare_colour(rare));
+    else glyph_armor(x0 + g_fs * 1.9f, y0 + bh * 0.5f, g_fs * 0.75f, piece, rare_colour(rare));
+    text_o(x0 + g_fs * 3.0f, y0 + g_fs * 0.25f, 1.05f, 0xffffffff, name);
+    char line[64];
+    Buf b = {line, 0, sizeof line};
+    put(&b, "RARE "), put_int(&b, rare);
+    text_o(x0 + g_fs * 3.0f, y0 + g_fs * 1.35f, 0.85f, 0xfff0f0f0, line);
+    text_r(x1 - g_fs * 1.6f, y0 + g_fs * 1.35f, 0.85f, 0xfff0f0f0, own);
+    float py = y0 + bh + g_fs * 0.3f, ph = (y1 - py) * 0.58f;
+    tan_box(x0 + g_fs * 0.3f, py, x1 - g_fs * 0.3f, py + ph);  // (the picture's place: the weapon's glyph, large)
+    if (weapon) glyph_weapon((x0 + x1) * 0.5f, py + ph * 0.5f, ph * 0.32f, rare_colour(rare));
+    else glyph_armor((x0 + x1) * 0.5f, py + ph * 0.5f, ph * 0.3f, piece, rare_colour(rare));
+    float sy = py + ph + g_fs * 0.4f, x = x0 + g_fs * 1.2f, xv = x0 + (x1 - x0) * 0.45f, xr = x1 - g_fs * 1.2f;
+    tan_box(x0 + g_fs * 0.3f, sy - g_fs * 0.2f, x1 - g_fs * 0.3f, y1);
+    if (atk >= 0) {
+        text_o(x, sy, 1.0f, 0xfff4f4f4, weapon ? "공격력" : "방어력");
+        b.n = 0, put_int(&b, atk);
+        text_o(xv, sy, 1.0f, 0xfff4f4f4, line);
+        if (atk0 >= 0 && atk != atk0) {
+            b.n = 0, put(&b, atk > atk0 ? "+" : ""), put_int(&b, atk - atk0);
+            text_o(xv + (xr - xv) * 0.5f, sy, 1.0f, atk > atk0 ? COL_HAVE : COL_LACK, line);
+        }
+        tan_rule(x, xr, sy + g_fs * 1.3f);
+    }
+    sy += g_fs * 1.6f;
+    text_o(x, sy, 1.0f, 0xfff4f4f4, "슬롯");
+    slots_draw(xv, sy + g_fs * 0.55f, slots);
+    sy += g_fs * 1.6f;
+    if (weapon && sharp >= 0) {
+        tan_rule(x, xr, sy - g_fs * 0.3f);
+        text_o(x, sy, 1.0f, 0xfff4f4f4, "예리도");
+        sharpness_bar(xv, sy + g_fs * 0.3f, xr - xv, g_fs * 0.55f, (uint32_t)sharp);
+    }
+    frame(x0, y0, x1, y1, 0);
+}
+
+static void draw_confirm(float W, float H) {
+    ImDrawList_AddRectFilled(g_dl, V2(0, H * 0.1f), V2(W, H * 0.74f), 0xd0000000, 0, 0);
+    float y0 = H * 0.13f, y1 = H * 0.66f, lx0 = W * 0.055f, lx1 = W * 0.46f, rx0 = W * 0.54f, rx1 = W * 0.945f;
+    char nm[96], line[160];
+    Buf b = {line, 0, sizeof line};
+    int cost = -1;
+    if (g_conf_kind == 0) {
+        const Weapon *wp = &g_w[g_conf_id];
+        const uint8_t *e1 = level_of((uint32_t)g_conf_id, 1), *b0 = base_of((uint32_t)g_conf_id);
+        bool gun = gunner(g_type);
+        int atk = e1 ? (int)(gun ? rd16(e1 + 6) : rd16(e1 + 8)) : -1, sl = e1 && !gun ? e1[LEVEL_STRIDE[g_type] - 1] : 0;
+        cost = b0 ? (int)rd32(b0 + 0xc) : -1;
+        // left: what it is made from (its materials), right: the weapon
+        frame(lx0, y0, lx1, y1, 0xff141416);
+        red_bar(lx0, y0, lx1, y0 + g_fs * 2.6f);
+        text_o(lx0 + g_fs * 1.5f, y0 + g_fs * 0.7f, 1.05f, 0xffffffff, "필요 소재");
+        tan_box(lx0 + g_fs * 0.3f, y0 + g_fs * 2.9f, lx1 - g_fs * 0.3f, y1);
+        const uint8_t *c = create_of((uint32_t)g_conf_id);
+        if (c) mat_list(lx0 + g_fs * 1.0f, lx1 - g_fs * 1.0f, y0 + g_fs * 3.3f, c + 6, 4, 4, 1, NULL);
+        frame(lx0, y0, lx1, y1, 0);
+        weapon_name(g_type, (uint32_t)g_conf_id, 0, nm, sizeof nm);
+        conf_card(rx0, y0, rx1, y1, nm, wp->rare, owned(g_type + 7, (uint32_t)g_conf_id) ? "보유 중" : "미보유", atk, -1, sl,
+                  e1 && !gun ? e1[6] : -1, true, 0);
+    } else {
+        const uint8_t *a = aser((uint32_t)g_conf_id), *c = acreate((uint32_t)g_conf_id, g_conf_piece);
+        frame(lx0, y0, lx1, y1, 0xff141416);
+        red_bar(lx0, y0, lx1, y0 + g_fs * 2.6f);
+        text_o(lx0 + g_fs * 1.5f, y0 + g_fs * 0.7f, 1.05f, 0xffffffff, "필요 소재");
+        tan_box(lx0 + g_fs * 0.3f, y0 + g_fs * 2.9f, lx1 - g_fs * 0.3f, y1);
+        if (c) mat_list(lx0 + g_fs * 1.0f, lx1 - g_fs * 1.0f, y0 + g_fs * 3.3f, c + 10, 5, 4, 1, NULL);
+        frame(lx0, y0, lx1, y1, 0);
+        armor_name((uint32_t)g_conf_id, g_conf_piece, nm, sizeof nm);
+        conf_card(rx0, y0, rx1, y1, nm, a ? a[0x67] + 1 : 1, owned(g_conf_piece + 1, (uint32_t)g_conf_id) ? "보유 중" : "미보유",
+                  a ? a[0x6a] : -1, -1, a ? a[0x6c + g_conf_piece] : 0, -1, false, g_conf_piece);
+    }
+    // the arrows and the cost between the cards
+    float mx = W * 0.5f, my = (y0 + y1) * 0.45f, k = g_fs * 1.3f;
+    for (int i = 0; i < 2; i++) {
+        float ox = mx - k * 0.9f + i * k * 0.8f;
+        ImDrawList_AddLine(g_dl, V2(ox, my - k), V2(ox + k * 0.7f, my), COL_GOLD, g_fs * 0.4f);
+        ImDrawList_AddLine(g_dl, V2(ox + k * 0.7f, my), V2(ox, my + k), COL_GOLD, g_fs * 0.4f);
+    }
+    if (cost >= 0) {
+        b.n = 0, put_int(&b, cost), put(&b, "z");
+        text_o(mx - text_w(line, 1.0f) * 0.5f, my + k * 1.4f, 1.0f, COL_GOLD, line);
+    }
+    // the question, in a box where the game's message box is
+    float qx0 = W * 0.012f, qx1 = W * 0.36f, qy0 = H * 0.755f, qy1 = H * 0.86f;
+    frame(qx0, qy0, qx1, qy1, 0xff141416);
+    b.n = 0, put(&b, "필요한 소재");
+    if (cost >= 0) put(&b, "와 "), put_int(&b, cost), put(&b, "z");
+    put(&b, "를 사용해서 생산할까요?");
+    if (g_conf >= 2) b.n = 0, put(&b, "생산하는 중...");
+    text_o(qx0 + g_fs, qy0 + g_fs * 0.6f, 1.0f, 0xfff4f4f4, line);
+    if (g_conf == 1) {
+        float ay = qy0 + g_fs * 2.2f, yx = qx0 + (qx1 - qx0) * 0.38f, nx = qx0 + (qx1 - qx0) * 0.68f;
+        float sx = g_conf_yes ? yx : nx;
+        text_o(sx - g_fs * 1.4f, ay, 1.1f, COL_GOLD, ">");
+        text_o(yx, ay, 1.1f, g_conf_yes ? 0xffffffff : 0xffa0a0a0, "예");
+        text_o(nx, ay, 1.1f, g_conf_yes ? 0xffa0a0a0 : 0xffffffff, "아니오");
+    }
+}
+
+static void conf_log(const char *what, uint16_t state) {
+    char l[120];
+    Buf b = {l, 0, sizeof l};
+    put(&b, "[SmithyTree] crafting: "), put(&b, what), put(&b, " (the smithy's screen "), put_int(&b, state >> 8), put(&b, "/"),
+        put_int(&b, state & 0xff), put(&b, ")");
+    log_line(l);
+}
+
+// Runs the confirmation; true while it has the screen.
+static bool confirm_step(float W, float H, uint16_t state) {
+    if (!g_conf) return false;
+    if (g_conf == 1) {
+        int dir = pad_dir();
+        if (dir == 1 || dir == 2) g_conf_yes = !g_conf_yes;
+        if (pressed(B_B) || (pressed(B_A) && !g_conf_yes)) g_conf = 0;
+        else if (pressed(B_A)) {
+            g_conf_state = state, g_conf_t = g_frame, g_conf = 2, g_conf_presses = 0;
+            g_conf_had = g_conf_kind == 0 ? owned(g_type + 7, (uint32_t)g_conf_id) : owned(g_conf_piece + 1, (uint32_t)g_conf_id);
+            mhxx_input_press(1u << 0, 80);  // (the game's A on its list: its own confirmation)
+            conf_log("A on the game's list", state);
+        }
+    } else if (g_fresh && g_conf == 2 && g_frame - g_conf_t >= 25) {
+        conf_log(state != g_conf_state ? "its confirmation is up: Yes" : "no new screen for its confirmation: A (Yes)", state);
+        mhxx_input_press(1u << 0, 80);  // (its Yes)
+        g_conf = 3, g_conf_t = g_frame;
+    } else if (g_fresh && g_conf == 3) {
+        if (state == g_conf_state && g_frame - g_conf_t >= 40) {
+            read_equip();
+            bool now = g_conf_kind == 0 ? owned(g_type + 7, (uint32_t)g_conf_id) : owned(g_conf_piece + 1, (uint32_t)g_conf_id);
+            conf_log(now && !g_conf_had ? "made" : "back on the list", state);
+            toast(now && !g_conf_had ? "생산했어요!" : "생산이 끝났어요 (만들어지지 않았다면 소재나 돈이 모자란 거예요)");
+            g_conf = 0, g_have_frame = 0;
+        } else if (state != g_conf_state && g_frame - g_conf_t >= 45) {
+            if (g_conf_presses < 3) {  // (its messages after: let them go)
+                conf_log("a message: A", state);
+                mhxx_input_press(1u << 0, 80), g_conf_presses++, g_conf_t = g_frame;
+            } else {  // (something the screen doesn't know: the game's, to the player)
+                conf_log("an unknown screen: the game has the controller", state);
+                g_conf = 0, g_hidden = true;
+                mhxx_input_capture(0);
+                return true;
+            }
+        }
+    }
+    if (g_conf) draw_confirm(W, H);
+    return g_conf != 0;
+}
+
 // ------------------------------------------------------------------ Forge's calls
 void forge_onLoad(ForgeVersion *required) { required->major = 1, required->minor = 0, required->patch = 0; }
 
@@ -1489,6 +1650,10 @@ void forge_onImGuiFreeRender(void) {
     read_equip();
     log_box_once();
     if (g_have_ok) wish_popups();
+    if (g_conf) {
+        g_want_id = g_conf_id;
+        if (confirm_step(W, H, state)) return;
+    }
     if (g_wish_open) {
         wish_input();
         draw_wishlist(W, H);
@@ -1520,6 +1685,7 @@ void forge_onImGuiFreeRender(void) {
         bool can = false;
         if (pressed(B_A)) {  // (A: the game's own A on this weapon - to make or upgrade it)
             if (g_want_result < 0) toast(g_w[g_cw].parent >= 0 && !create_of((uint32_t)g_cw) ? "파생 무기는 대장간의 '장비 강화'에서 이전 무기를 강화해서 만들어요" : "이 무기는 지금 게임 목록에 없어요 (해금 전이거나 소재 정보가 아직 없어요)");
+            else if (g_now.screen == 3) g_conf = 1, g_conf_yes = 1, g_conf_kind = 0, g_conf_id = g_cw;
             else {
                 g_hidden = true, hid_at = state, left = false;
                 mhxx_input_capture(0);
@@ -1535,6 +1701,9 @@ void forge_onImGuiFreeRender(void) {
         g_want_id = g_narank ? g_arow_of[g_arow] : -1;
         if (pressed(B_A)) {
             if (g_want_result < 0) toast("이 방어구는 지금 게임 목록에 없어요 (해금 전이거나 다른 부위 / 페이지)");
+            else if (g_apiece != g_now.category - 1) toast("게임 목록은 다른 부위예요: B로 나가서 이 부위를 고른 뒤 만들 수 있어요");
+            else if (g_now.screen == 3)
+                g_conf = 1, g_conf_yes = 1, g_conf_kind = 1, g_conf_id = g_arow_of[g_arow], g_conf_piece = g_apiece;
             else {
                 g_hidden = true, hid_at = state, left = false;
                 mhxx_input_capture(0);
