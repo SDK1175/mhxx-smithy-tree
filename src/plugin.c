@@ -43,7 +43,7 @@
 #define CIMGUI_DEFINE_ENUMS_AND_STRUCTS
 #include "cimgui.h"
 
-#define VERSION "0.9.1"
+#define VERSION "0.10.0"
 
 // ------------------------------------------------------------------ the little of libc it needs (no libc here; hidden:
 // not offered to other plugins)
@@ -283,6 +283,37 @@ static void read_box(void) {
     }
     g_have_ok = true;
 }
+
+// ------------------------------------------------------------------ the equipment box (what the player owns) and the
+// items the player has ever had (what unlocks recipes): GU's sEquipBox (+0x1c 44 bytes an entry: +4 its kind - a weapon
+// type + 7, a piece 1-5 - +6 its number) and the item-acquired flags (+0x9c a bit an item), where mhxx_gu_data says
+#define TAGS 22
+static uint8_t g_owned[TAGS][2048 / 8];
+static bool g_owned_ok;
+static uint32_t g_acq;  // (the flags' address, 0: unknown)
+static void read_equip(void) {
+    static uint32_t at;
+    if (at && g_frame - at < 30) return;
+    at = g_frame | 1;
+    memset(g_owned, 0, sizeof g_owned);
+    g_owned_ok = false;
+    uint32_t pb = mhxx_gu_data(0x1856fe8), ps = mhxx_gu_data(0x1897f78), pa = mhxx_gu_data(0x18583a8);
+    g_acq = pa && ok_ptr(G32(pa)) ? G32(pa) + 0x9c : 0;
+    if (!pb || !ps) return;
+    uint32_t bx = G32(pb), save = G32(ps);
+    if (!ok_ptr(bx) || !ok_ptr(save) || G32(bx) != mhxx_gu_data(0x173e3d0)) return;
+    uint32_t flags = G32(save + 0x958), exp = G32(save + 0x3614), n = 1000;
+    n += 200 * (((flags >> 21) & 1) + ((flags >> 22) & 1));
+    for (int k = 0; k < 3; k++) n += 200 * ((exp >> k) & 1);
+    if (n > 2000) return;
+    for (uint32_t i = 0; i < n; i++) {
+        uint32_t e = bx + 0x1c + i * 44, tag = G16(e + 4) & 31, id = G16(e + 6);
+        if (tag && tag < TAGS && id < 2048) g_owned[tag][id >> 3] |= (uint8_t)(1u << (id & 7));
+    }
+    g_owned_ok = true;
+}
+static bool owned(int tag, uint32_t id) { return tag > 0 && tag < TAGS && id < 2048 && (g_owned[tag][id >> 3] >> (id & 7)) & 1; }
+static bool acquired(uint32_t item) { return !g_acq || item >= ITEMS || (G8(g_acq + (item >> 3)) >> (item & 7)) & 1; }
 
 // ------------------------------------------------------------------ weapons: one type at a time
 static const uint8_t BASE_STRIDE[TYPES] = {33, 33, 33, 33, 32, 0, 32, 33, 34, 34, 33, 34, 33, 34, 34};
@@ -790,6 +821,21 @@ static int wish_percent(const Wish *w) {
     if (!need) return 100;
     return (int)((float)got * 100.0f / (float)need);
 }
+static void wish_popups(void) {  // (a word when an entry's materials are all there)
+    static uint8_t done[WISHES];
+    static int n_was;
+    for (int i = 0; i < g_nwish; i++) {
+        bool full = wish_percent(&g_wish[i]) >= 100;
+        if (full && !done[i] && i < n_was) {
+            char t[120];
+            Buf b = {t, 0, sizeof t};
+            put(&b, "위시리스트: "), put(&b, g_wish[i].name), put(&b, " 소재를 다 모았어요!");
+            toast(t);
+        }
+        done[i] = full;
+    }
+    n_was = g_nwish;
+}
 static int wish_ready(void) {
     int n = 0;
     for (int i = 0; i < g_nwish; i++) n += wish_percent(&g_wish[i]) >= 100;
@@ -836,6 +882,19 @@ static bool g_hidden, g_wish_open;
 static float g_ncol[WMAX];  // a weapon's node: its column (its rarity's; right of its parent's at least)
 static int g_ncols, g_ncol_type = -1;
 
+static bool g_spoiler = true;  // (Y: weapons whose key materials were never found show as ?)
+static bool weapon_locked(int w) {
+    const uint8_t *c = create_of((uint32_t)w);
+    if (c) {
+        for (int k = 0; k < 4; k++)
+            if (rd16(c + 6 + 4 * k) && c[9 + 4 * k] && !acquired(rd16(c + 6 + 4 * k))) return true;
+        return false;
+    }
+    const uint8_t *p = proc_of((uint32_t)w, 1);
+    return p && rd16(p + 4) && !acquired(rd16(p + 4));
+}
+static bool hidden_w(int w) { return g_spoiler && !owned(g_type + 7, (uint32_t)w) && weapon_locked(w); }
+
 static void layout_nodes(void) {
     if (g_ncol_type == g_type) return;
     g_ncol_type = g_type, g_ncols = 1;
@@ -861,6 +920,7 @@ static void weapon_input(void) {
     if (pressed(B_L)) g_clv = g_clv >= g_w[g_cw].top ? 1 : g_clv + 1;  // (L: the card's level)
     if (pressed(B_ZR)) wish_weapon(g_cw, false);
     if (pressed(B_ZL)) wish_weapon(g_cw, true);
+    if (pressed(B_Y)) g_spoiler = !g_spoiler, toast(g_spoiler ? "스포일러 방지: 켬 (열쇠 소재를 못 찾은 무기는 ?)" : "스포일러 방지: 끔 (전부 보기)");
 }
 
 static void draw_weapon_tree(float x0, float y0, float x1, float y1) {
@@ -899,7 +959,7 @@ static void draw_weapon_tree(float x0, float y0, float x1, float y1) {
         if (sel) ImDrawList_AddRectFilled(g_dl, V2(x0 + 3, cy - rowh * 0.5f + 1), V2(x0 + 7, cy + rowh * 0.5f - 1), COL_GOLD, 0, 0);
         weapon_name(g_type, (uint32_t)w, 0, nm, sizeof nm);
         ImDrawList_PushClipRect(g_dl, V2(x0 + 3, cy - rowh), V2(gx0 - g_fs * 0.3f, cy + rowh), true);
-        text_o(x0 + g_fs * 0.8f, cy - g_fs * 0.68f, 1.3f, sel ? 0xff70f0ff : 0xffeeeeee, nm);
+        text_o(x0 + g_fs * 0.8f, cy - g_fs * 0.68f, 1.3f, sel ? 0xff70f0ff : hidden_w(w) ? 0xff909090 : 0xffeeeeee, nm);
         ImDrawList_PopClipRect(g_dl);
     }
     for (int i = 0; i < g_nrows; i++) {  // (lines: down from the parent, across to the weapon, its level on a tag)
@@ -928,7 +988,12 @@ static void draw_weapon_tree(float x0, float y0, float x1, float y1) {
         if (cy < top - rowh || cy > y1 + rowh) continue;
         bool sel = w == g_cw;
         icon_cell(cx, cy, hs, sel, true);
-        glyph_weapon(cx, cy, hs * 0.85f, rare_colour(g_w[w].rare));
+        if (hidden_w(w)) text_o(cx - g_fs * 0.42f, cy - g_fs * 0.72f, 1.4f, 0xffd080f0, "?");
+        else glyph_weapon(cx, cy, hs * 0.85f, rare_colour(g_w[w].rare));
+        if (owned(g_type + 7, (uint32_t)w)) {  // (owned: a green check)
+            ImDrawList_AddLine(g_dl, V2(cx + hs * 0.35f, cy - hs * 0.75f), V2(cx + hs * 0.6f, cy - hs * 0.45f), 0xff40e060, 3.0f);
+            ImDrawList_AddLine(g_dl, V2(cx + hs * 0.6f, cy - hs * 0.45f), V2(cx + hs * 1.05f, cy - hs * 1.1f), 0xff40e060, 3.0f);
+        }
         if (sel) ImDrawList_AddRectFilled(g_dl, V2(cx - hs, cy + hs + 3), V2(cx + hs, cy + hs + 6), 0xff40e060, 0, 0);
         if (wish_find(0, g_type, w) >= 0) ImDrawList_AddCircleFilled(g_dl, V2(cx + hs, cy - hs), g_fs * 0.22f, 0xff30d0ff, 10);
     }
@@ -953,6 +1018,8 @@ static void draw_weapon_card(float x0, float y0, float x1, float y1, int w, int 
     text_o(x0 + g_fs * 3.0f, y0 + g_fs * 1.35f, 0.85f, 0xfff0f0f0, line);
     b.n = 0, put(&b, "L  Lv "), put_int(&b, lv), put(&b, " / "), put_int(&b, wp->top);
     text_r(x1 - g_fs * 1.6f, y0 + g_fs * 0.3f, 0.85f, 0xfff0f0f0, line);
+    bool own = owned(g_type + 7, (uint32_t)w);
+    text_r(x1 - g_fs * 1.6f, y0 + g_fs * 1.35f, 0.85f, own ? 0xff70ff70 : 0xfff0f0f0, g_owned_ok ? (own ? "보유 중" : "미보유") : "");
     float y = y0 + bh + g_fs * 0.2f, x = x0 + g_fs * 0.6f, xr = x1 - g_fs * 0.6f, xv = x + (xr - x) * 0.36f;
     float sy = y;
     tan_box(x0, y, x1, y1);
@@ -1011,6 +1078,14 @@ static void draw_weapon_card(float x0, float y0, float x1, float y1, int w, int 
         if (p) y = mat_list(x, xr, y, p + 4, 4, 3, 0, &ok);
     }
     if (can) *can = ok;
+    if (hidden_w(w)) {
+        b.n = 0, put(&b, "잠김: ");
+        if (wp->parent >= 0 && !create_of((uint32_t)w)) {
+            weapon_name(g_type, (uint32_t)wp->parent, 0, nm, sizeof nm);
+            put(&b, nm), put(&b, " Lv"), put_int(&b, wp->from_lv), put(&b, " 이상 + 열쇠 소재 필요");
+        } else put(&b, "열쇠 소재(*)를 아직 못 찾았어요");
+        text_o(x, y, 0.9f, 0xffd080f0, line), y += g_fs * 1.2f;
+    } else if (ok && g_have_ok) text_o(x, y, 0.95f, 0xff40e0ff, "지금 만들 수 있어요"), y += g_fs * 1.2f;
     tan_rule(x0 + 4, x1 - 4, y), y += g_fs * 0.2f;
     // its names by level
     int s1 = wp->s1, top = wp->top;
@@ -1132,6 +1207,10 @@ static void draw_armor_grid(float x0, float y0, float x1, float y1) {
             bool on = sel && p == g_apiece;
             icon_cell(cx, cy, hs, on, true);
             glyph_armor(cx, cy, hs * 0.85f, p, rare_colour(rare));
+            if (owned(p + 1, s)) {
+                ImDrawList_AddLine(g_dl, V2(cx + hs * 0.35f, cy - hs * 0.75f), V2(cx + hs * 0.6f, cy - hs * 0.45f), 0xff40e060, 3.0f);
+                ImDrawList_AddLine(g_dl, V2(cx + hs * 0.6f, cy - hs * 0.45f), V2(cx + hs * 1.05f, cy - hs * 1.1f), 0xff40e060, 3.0f);
+            }
             if (wish_find(1, p, (int)s) >= 0) ImDrawList_AddCircleFilled(g_dl, V2(cx + hs, cy - hs), g_fs * 0.22f, 0xff30d0ff, 10);
         }
     }
@@ -1156,6 +1235,7 @@ static void draw_armor_card(float x0, float y0, float x1, float y1) {
     text_o(x0 + g_fs * 3.0f, y0 + g_fs * 0.25f, 1.05f, 0xffffffff, c ? nm : "-");
     b.n = 0, put(&b, "RARE "), put_int(&b, rare);
     text_o(x0 + g_fs * 3.0f, y0 + g_fs * 1.35f, 0.85f, 0xfff0f0f0, line);
+    if (g_owned_ok) text_r(x1 - g_fs * 1.6f, y0 + g_fs * 1.35f, 0.85f, owned(p + 1, s) ? 0xff70ff70 : 0xfff0f0f0, owned(p + 1, s) ? "보유 중" : "미보유");
     float y = y0 + bh + g_fs * 0.2f, x = x0 + g_fs * 0.6f, xr = x1 - g_fs * 0.6f;
     tan_box(x0, y, x1, y1);
     y += g_fs * 0.25f;
@@ -1308,6 +1388,7 @@ static void bottom(float W, float H, bool weapons) {
     key_hint(x, y, "ZL", weapons ? "경로 전체 담기" : "세트 전체 담기", &x);
     key_hint(x, y, "ZR", "위시리스트 담기", &x);
     key_hint(x, y, "L", weapons ? "레벨" : "랭크", &x);
+    if (weapons) key_hint(x, y, "Y", g_spoiler ? "전부 보기" : "스포일러 방지", &x);
     key_hint(x, y, "B", "뒤로", &x);
     // the wish list button (the game's message box on the left: right of it)
     float bx0 = W * 0.37f, bx1 = W * 0.50f, by0 = H * 0.79f, by1 = by0 + g_fs * 2.2f;
@@ -1344,6 +1425,7 @@ void forge_onUpdate(float dt) {
 static void log_box_once(void) {
     static bool done;
     if (done || !g_have_frame) return;
+    read_equip();
     done = true;
     char l[300], nm[64];
     Buf b = {l, 0, sizeof l};
@@ -1364,6 +1446,11 @@ static void log_box_once(void) {
             }
         put_int(&b, kinds), put(&b, " kinds of item");
     }
+    int pieces = 0;
+    for (int t = 0; t < TAGS; t++)
+        for (int k = 0; k < 256; k++) pieces += __builtin_popcount(g_owned[t][k]);
+    put(&b, "; equipment box: "), put(&b, g_owned_ok ? "read, " : "not read, "), put_int(&b, pieces),
+        put(&b, " kinds owned; acquired flags "), put_hex(&b, g_acq);
     log_line(l);
 }
 
@@ -1399,7 +1486,9 @@ void forge_onImGuiFreeRender(void) {
     }
     mhxx_input_capture(150);  // (the controller is the screen's while it is up)
     read_box();
+    read_equip();
     log_box_once();
+    if (g_have_ok) wish_popups();
     if (g_wish_open) {
         wish_input();
         draw_wishlist(W, H);
