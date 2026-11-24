@@ -43,7 +43,7 @@
 #define CIMGUI_DEFINE_ENUMS_AND_STRUCTS
 #include "cimgui.h"
 
-#define VERSION "0.3.0"
+#define VERSION "0.4.0"
 
 // ------------------------------------------------------------------ the little of libc it needs (no libc here; hidden:
 // not offered to other plugins)
@@ -278,8 +278,9 @@ static int g_type = -1;
 
 #define WMAX 256
 typedef struct {
-    int16_t parent, row;
+    int16_t parent, row, root;
     uint8_t from_lv, top, rare, s1, depth;  // s1: the level the second name starts (0: none)
+    uint8_t start;                          // the tree's column of its level 1 (its parent's derivation level's next)
 } Weapon;
 static Weapon g_w[WMAX];
 static uint16_t g_rows[WMAX];  // the tree's rows (weapons), depth first
@@ -319,6 +320,9 @@ static int name_tier(uint32_t w, uint32_t lv) {
 static void add_rows(uint32_t w, int depth) {
     if (g_nrows >= WMAX || g_w[w].row >= 0) return;
     g_w[w].row = (int16_t)g_nrows, g_w[w].depth = (uint8_t)depth;
+    int16_t pa = g_w[w].parent;
+    g_w[w].root = depth && pa >= 0 ? g_w[pa].root : (int16_t)w;
+    g_w[w].start = depth && pa >= 0 ? (uint8_t)(g_w[pa].start + (g_w[w].from_lv ? g_w[w].from_lv : g_w[pa].top)) : 0;
     g_rows[g_nrows++] = (uint16_t)w;
     const uint8_t *b = base_of(w);
     uint32_t s = BASE_STRIDE[g_type];
@@ -353,7 +357,7 @@ static bool load_type(int t) {
         return false;
     }
     uint32_t s = BASE_STRIDE[t], ls = LEVEL_STRIDE[t];
-    for (uint32_t w = 0; w < WMAX; w++) g_w[w] = (Weapon){-1, -1, 0, 0, 0, 0, 0};
+    for (uint32_t w = 0; w < WMAX; w++) g_w[w] = (Weapon){-1, -1, -1, 0, 0, 0, 0, 0, 0};
     for (uint32_t w = 0; w < g_nbase; w++) {  // (who derives from whom, at which level)
         const uint8_t *e = base_of(w);
         g_w[w].rare = (uint8_t)(e[0xb] + 1);
@@ -514,7 +518,7 @@ static void panel(float x0, float y0, float x1, float y1) {
 }
 static void rule(float x0, float x1, float y) { ImDrawList_AddLine(g_dl, V2(x0, y), V2(x1, y), 0x40ffffff, 1.0f); }
 
-static const char *const TYPE_NAME[TYPES] = {"대검", "한손검", "해머", "랜스", "헤비보우건", "", "라이트보우건", "태도",
+__attribute__((unused)) static const char *const TYPE_NAME[TYPES] = {"대검", "한손검", "해머", "랜스", "헤비보우건", "", "라이트보우건", "태도",
                                              "슬래시액스", "건랜스", "활", "쌍검", "수렵피리", "조충곤", "차지액스"};
 static const char *const ELEMENT[10] = {"", "불", "물", "번개", "용", "얼음", "독", "마비", "수면", "폭파"};
 static const ImU32 ELEMENT_COL[10] = {0xffffffff, 0xff3c6cff, 0xffffa040, 0xff30e0ff, 0xffb050c0,
@@ -522,32 +526,41 @@ static const ImU32 ELEMENT_COL[10] = {0xffffffff, 0xff3c6cff, 0xffffa040, 0xff30
 static const ImU32 SHARP_COL[7] = {0xff2828d8, 0xff2080f0, 0xff20e0f0, 0xff30d050, 0xfff08030, 0xfff8f8f8, 0xffd040b0};
 static const char *const PIECE[5] = {"머리", "몸통", "팔", "허리", "다리"};
 
-// A list of materials, each with what the player has: "name x2    보유 5". Returns the y after it.
+// A list of materials, each with what the player has: "name   x2   = 5". Returns the y after it.
 static float materials(float x, float x1, float y, const char *title, const uint8_t *e, int n, int stride, int has_key) {
     char line[160], nm[96];
     Buf b = {line, 0, sizeof line};
-    text(x, y, 0xff50d0ff, title);
-    y += g_fs * 1.25f;
+    if (title) {
+        ImDrawList_AddRectFilled(g_dl, V2(x - g_fs * 0.4f, y), V2(x1 + g_fs * 0.4f, y + g_fs * 1.25f), 0xff2a2620, 0, 0);
+        text(x, y + g_fs * 0.12f, 0xffe0e0e0, title);
+        y += g_fs * 1.5f;
+    }
     int shown = 0;
     for (int k = 0; k < n; k++) {
         const uint8_t *m = e + k * stride;
         uint32_t it = rd16(m), q = m[2];
         if (!it || !q) continue;
         shown++;
+        float h = g_fs * 2.15f;
+        ImDrawList_AddRectFilled(g_dl, V2(x - g_fs * 0.4f, y), V2(x1 + g_fs * 0.4f, y + h - 3), 0xc0201c18, g_fs * 0.15f, 0);
+        int r = it < ITEMS ? g_item_rare[it] : 1;
+        ImDrawList_AddCircleFilled(g_dl, V2(x + g_fs * 0.45f, y + h * 0.5f), g_fs * 0.42f, rare_colour(r), 12);
         item_name(it, nm, sizeof nm);
         b.n = 0;
         if (has_key && m[3]) put(&b, "* ");
-        put(&b, nm), put(&b, "  x"), put_int(&b, (int)q);
-        text_s(x + g_fs * 0.6f, y, 0.92f, 0xffe8e8e8, line);
+        put(&b, nm);
+        text_s(x + g_fs * 1.3f, y + g_fs * 0.08f, 0.95f, 0xffe8e8e8, line);
+        b.n = 0, put(&b, "x"), put_int(&b, (int)q);
+        text_s(x + g_fs * 1.3f, y + g_fs * 1.05f, 0.9f, 0xffc8c8c8, line);
         if (g_have_ok) {
             uint32_t have = g_have[it];
             b.n = 0, put(&b, "보유 "), put_int(&b, (int)have);
-            text_s(x1 - text_w(line) * 0.92f, y, 0.92f, have >= q ? 0xff60e060 : 0xff6060f0, line);
+            text_s(x1 - text_w(line) * 0.9f, y + g_fs * 1.05f, 0.9f, have >= q ? 0xff60e060 : 0xff6060f0, line);
         }
-        y += g_fs * 1.12f;
+        y += h;
     }
-    if (!shown) text_s(x + g_fs * 0.6f, y, 0.92f, 0xff909090, "(재료 없음)"), y += g_fs * 1.12f;
-    return y + g_fs * 0.35f;
+    if (!shown) text_s(x, y, 0.92f, 0xff909090, "(필요 소재 없음)"), y += g_fs * 1.2f;
+    return y + g_fs * 0.3f;
 }
 
 static void sharpness_bar(float x, float y, float w, float h, uint32_t id) {
@@ -571,149 +584,261 @@ static void slots_text(Buf *b, int n) {
     for (int i = 0; i < 3; i++) put(b, i < n ? "O" : "-");
 }
 
-// ---- weapons
-static void draw_weapon_tree(float x0, float y0, float x1, float y1, int sel) {
+// ---- weapons: the cursor (a weapon and a level), the tree, the materials, the details
+static int g_cw = -1, g_clv = 1;  // the tree's cursor
+static int g_cur_type = -1;
+static uint16_t g_game_id, g_game_lv;
+static bool g_hidden;
+
+static int col_of(int w, int lv) { return g_w[w].start + lv - 1; }
+
+static void cursor_from_game(void) {
+    if (g_cur_type != g_type || g_now.id != g_game_id || g_now.level != g_game_lv) {
+        g_cur_type = g_type, g_game_id = g_now.id, g_game_lv = g_now.level;
+        g_cw = g_now.id, g_clv = g_now.level < 1 ? 1 : g_now.level;
+        if (g_clv > g_w[g_cw].top) g_clv = g_w[g_cw].top;
+    }
+}
+
+void forge_input_getStickR(float *x, float *y);
+bool forge_input_isPressed(uint32_t button);
+static void cursor_move(void) {
+    static int held, dir_prev;
+    float sx = 0, sy = 0;
+    forge_input_getStickR(&sx, &sy);
+    int dir = sx > 0.55f ? 1 : sx < -0.55f ? 2 : sy > 0.55f ? 3 : sy < -0.55f ? 4 : 0;
+    if (!dir || dir != dir_prev) held = 0;
+    dir_prev = dir;
+    if (!dir) return;
+    bool go = held == 0 || (held >= 14 && ((held - 14) & 3) == 0);
+    held++;
+    if (!go || g_cw < 0) return;
+    const Weapon *x = &g_w[g_cw];
+    if (dir == 1) {  // right: the next level, past the last a weapon derived there
+        if (g_clv < x->top) g_clv++;
+        else
+            for (int i = x->row + 1; i < g_nrows; i++)
+                if (g_w[g_rows[i]].parent == g_cw) { g_cw = g_rows[i], g_clv = 1; break; }
+    } else if (dir == 2) {  // left: the level before, from level 1 the parent where it derives
+        if (g_clv > 1) g_clv--;
+        else if (x->parent >= 0) g_clv = x->from_lv ? x->from_lv : g_w[x->parent].top, g_cw = x->parent;
+    } else {  // up / down: the row above or below, the same column
+        int r = x->row + (dir == 3 ? -1 : 1);
+        if (r < 0 || r >= g_nrows) return;
+        int c = col_of(g_cw, g_clv), w = g_rows[r], lv = c - g_w[w].start + 1;
+        g_cw = w, g_clv = lv < 1 ? 1 : lv > g_w[w].top ? g_w[w].top : lv;
+    }
+}
+
+static void node(float cx, float cy, float hs, int rare, bool lit, bool sel, bool renamed, bool last) {
+    ImU32 rc = rare_colour(rare);
+    ImDrawList_AddRectFilled(g_dl, V2(cx - hs, cy - hs), V2(cx + hs, cy + hs), lit ? 0xff3a3020 : 0xff1e1c1a, g_fs * 0.15f, 0);
+    ImDrawList_AddRect(g_dl, V2(cx - hs, cy - hs), V2(cx + hs, cy + hs), lit ? 0xffa0a0a0 : 0xff505050, g_fs * 0.15f,
+                       1.2f, 0);
+    float k = hs * 0.55f;  // (a blade: the rarity's colour)
+    ImDrawList_AddLine(g_dl, V2(cx - k, cy + k), V2(cx + k, cy - k), rc, g_fs * 0.2f);
+    ImDrawList_AddLine(g_dl, V2(cx - k, cy + k), V2(cx - k * 0.45f, cy + k * 0.45f), 0xffe0e0e0, g_fs * 0.22f);
+    if (renamed) {  // (a new name from here: World's badge)
+        float b = hs * 0.42f;
+        ImDrawList_AddRectFilled(g_dl, V2(cx - hs - b * 0.3f, cy - hs - b * 0.3f), V2(cx - hs + b, cy - hs + b), 0xffc8b090,
+                                 0, 0);
+    }
+    if (last) ImDrawList_AddRect(g_dl, V2(cx - hs - 2, cy - hs - 2), V2(cx + hs + 2, cy + hs + 2), rc, g_fs * 0.18f, 1.5f, 0);
+    if (sel) {
+        ImDrawList_AddRect(g_dl, V2(cx - hs - 4, cy - hs - 4), V2(cx + hs + 4, cy + hs + 4), 0xff40e060, g_fs * 0.2f, 3.0f, 0);
+    }
+}
+
+static void draw_weapon_tree(float x0, float y0, float x1, float y1) {
     panel(x0, y0, x1, y1);
     char line[128], nm[96];
     Buf b = {line, 0, sizeof line};
-    put(&b, TYPE_NAME[g_type]), put(&b, " 파생 트리");
-    text(x0 + g_fs, y0 + g_fs * 0.5f, 0xff50d0ff, line);
-    b.n = 0, put(&b, "무기 "), put_int(&b, g_nrows), put(&b, "종");
-    text_s(x1 - g_fs * 5.0f, y0 + g_fs * 0.6f, 0.85f, 0xff909090, line);
-    float top = y0 + g_fs * 2.0f, rowh = g_fs * 1.55f, colw = g_fs * 1.25f, left = x0 + g_fs * 0.9f;
-    int visible = (int)((y1 - top - g_fs * 0.4f) / rowh);
-    static float scroll;
-    int selrow = sel >= 0 ? g_w[sel].row : 0;
-    float want = (float)selrow - (float)visible * 0.45f;
-    if (want > (float)(g_nrows - visible)) want = (float)(g_nrows - visible);
-    if (want < 0) want = 0;
-    scroll += (want - scroll) * 0.25f;
-    // the selected weapon's path: lit
-    static uint8_t lit[WMAX];
-    memset(lit, 0, sizeof lit);
-    for (int w = sel; w >= 0 && w < WMAX; w = g_w[w].parent) lit[w] = 1;
-    ImDrawList_PushClipRect(g_dl, V2(x0, top - 2), V2(x1, y1 - g_fs * 0.3f), true);
-    float hs = g_fs * 0.42f;
-    for (int i = 0; i < g_nrows; i++) {  // (lines first, nodes over them)
-        uint32_t w = g_rows[i];
-        if (g_w[w].parent < 0) continue;
-        const Weapon *p = &g_w[g_w[w].parent];
-        float cy = top + ((float)i - scroll) * rowh + rowh * 0.5f, py = top + ((float)p->row - scroll) * rowh + rowh * 0.5f;
-        if ((cy < top - rowh && py < top - rowh) || (cy > y1 + rowh && py > y1 + rowh)) continue;
-        float px = left + colw * (float)p->depth, cx = left + colw * (float)g_w[w].depth;
-        bool on = lit[w];
-        ImU32 c = on ? 0xff40d8ff : 0x90a0a0a0;
-        float th = on ? 2.5f : 1.3f;
-        ImDrawList_AddLine(g_dl, V2(px, py + hs), V2(px, cy), c, th);
-        ImDrawList_AddLine(g_dl, V2(px, cy), V2(cx - hs, cy), c, th);
-    }
+    float labw = (x1 - x0) * 0.22f, gx0 = x0 + labw, top = y0 + g_fs * 0.6f, rowh = g_fs * 2.1f, colw = g_fs * 2.05f,
+          hs = g_fs * 0.62f;
+    int vis_rows = (int)((y1 - top - g_fs * 0.3f) / rowh), vis_cols = (int)((x1 - gx0 - g_fs) / colw);
+    static float sr, sc;  // (the view, in rows and columns: eased towards the cursor)
+    int crow = g_w[g_cw].row, ccol = col_of(g_cw, g_clv);
+    float wr = (float)crow - (float)vis_rows * 0.4f, wc = (float)ccol - (float)vis_cols * 0.5f;
+    if (wr > (float)(g_nrows - vis_rows)) wr = (float)(g_nrows - vis_rows);
+    if (wr < 0) wr = 0;
+    if (wc < 0) wc = 0;
+    sr += (wr - sr) * 0.25f, sc += (wc - sc) * 0.25f;
+    // the path to the cursor: lit up to the level where each next weapon derives
+    static uint8_t lit_to[WMAX];
+    memset(lit_to, 0, sizeof lit_to);
+    lit_to[g_cw] = (uint8_t)g_clv;
+    for (int w = g_cw; g_w[w].parent >= 0; w = g_w[w].parent)
+        lit_to[g_w[w].parent] = g_w[w].from_lv ? g_w[w].from_lv : g_w[g_w[w].parent].top;
+#define RY(r) (top + ((float)(r) - sr) * rowh + rowh * 0.5f)
+#define CX(c) (gx0 + g_fs * 0.8f + ((float)(c) - sc) * colw + colw * 0.5f)
+    // the families' bands and labels (fixed on the left)
     for (int i = 0; i < g_nrows; i++) {
-        uint32_t w = g_rows[i];
+        int w = g_rows[i];
+        if (g_w[w].depth) continue;
+        int j = i + 1;
+        while (j < g_nrows && g_w[g_rows[j]].depth) j++;
+        float ya = RY(i) - rowh * 0.5f, yb = RY(j - 1) + rowh * 0.5f;
+        if (yb < top || ya > y1) continue;
+        if (ya < top) ya = top;
+        if (yb > y1 - 2) yb = y1 - 2;
+        bool here = g_w[g_cw].root == w;
+        ImDrawList_AddRectFilled(g_dl, V2(x0 + 2, ya + 1), V2(x1 - 2, yb - 1), here ? 0x30406080 : (i & 1) ? 0x14ffffff : 0x08ffffff,
+                                 0, 0);
+        ImDrawList_AddLine(g_dl, V2(x0 + 2, yb), V2(x1 - 2, yb), 0x30ffffff, 1.0f);
+        weapon_name(g_type, (uint32_t)w, 0, nm, sizeof nm);
+        b.n = 0, put(&b, nm), put(&b, " 파생");
+        ImDrawList_PushClipRect(g_dl, V2(x0, ya), V2(gx0 - g_fs * 0.3f, yb), true);
+        text_s(x0 + g_fs * 0.6f, (RY(i) > ya + rowh * 0.3f ? RY(i) : ya + rowh * 0.5f) - g_fs * 0.45f, 0.9f,
+               here ? 0xff80e0ff : 0xffd8b070, line);
+        ImDrawList_PopClipRect(g_dl);
+    }
+    ImDrawList_PushClipRect(g_dl, V2(gx0, top), V2(x1 - 2, y1 - 2), true);
+    for (int i = 0; i < g_nrows; i++) {  // (lines: a weapon's levels, and from where each derives)
+        int w = g_rows[i];
         const Weapon *x = &g_w[w];
-        float y = top + ((float)i - scroll) * rowh, cy = y + rowh * 0.5f;
-        if (y + rowh < top || y > y1) continue;
-        bool is = (int)w == sel;
-        if (is) ImDrawList_AddRectFilled(g_dl, V2(x0 + 3, y + 1), V2(x1 - 3, y + rowh - 1), 0x38ffd060, g_fs * 0.2f, 0);
-        float cx = left + colw * (float)x->depth;
-        ImDrawList_AddRectFilled(g_dl, V2(cx - hs, cy - hs), V2(cx + hs, cy + hs), rare_colour(x->rare), g_fs * 0.12f, 0);
-        if (is) ImDrawList_AddRect(g_dl, V2(cx - hs - 3, cy - hs - 3), V2(cx + hs + 3, cy + hs + 3), 0xff40e0ff,
-                                   g_fs * 0.2f, 2.5f, 0);
-        weapon_name(g_type, w, 0, nm, sizeof nm);
-        b.n = 0, put(&b, nm);
-        float tx = cx + hs + g_fs * 0.45f;
-        text(tx, cy - g_fs * 0.5f, is ? 0xff70e8ff : lit[w] ? 0xffb8e8ff : 0xffdcdcdc, line);
-        b.n = 0;
-        if (x->parent >= 0 && x->from_lv) put(&b, "Lv"), put_int(&b, x->from_lv), put(&b, " > ");
-        put(&b, "Lv1-"), put_int(&b, x->top);
-        text_s(x1 - g_fs * 5.6f, cy - g_fs * 0.42f, 0.82f, 0xff8a8a8a, line);
+        float cy = RY(i);
+        for (int lv = 1; lv < x->top; lv++) {
+            bool on = lit_to[w] > lv;
+            ImDrawList_AddLine(g_dl, V2(CX(col_of(w, lv)) + hs, cy), V2(CX(col_of(w, lv + 1)) - hs, cy),
+                               on ? 0xff40d8ff : 0xff707070, on ? 2.5f : 1.3f);
+        }
+        if (x->parent >= 0) {
+            int p = x->parent, plv = x->from_lv ? x->from_lv : g_w[p].top;
+            float px = CX(col_of(p, plv)), py = RY(g_w[p].row), mx = px + colw * 0.5f;
+            bool on = lit_to[w] > 0;
+            ImU32 c = on ? 0xff40d8ff : 0xff707070;
+            float th = on ? 2.5f : 1.3f;
+            ImDrawList_AddLine(g_dl, V2(px + hs, py), V2(mx, py), c, th);
+            ImDrawList_AddLine(g_dl, V2(mx, py), V2(mx, cy), c, th);
+            ImDrawList_AddLine(g_dl, V2(mx, cy), V2(CX(col_of(w, 1)) - hs, cy), c, th);
+        }
+    }
+    for (int i = 0; i < g_nrows; i++) {  // (the nodes: a level each)
+        int w = g_rows[i];
+        const Weapon *x = &g_w[w];
+        float cy = RY(i);
+        if (cy < top - rowh || cy > y1 + rowh) continue;
+        for (int lv = 1; lv <= x->top; lv++) {
+            float cx = CX(col_of(w, lv));
+            if (cx < gx0 - colw || cx > x1 + colw) continue;
+            bool renamed = lv > 1 && name_tier((uint32_t)w, (uint32_t)lv) != name_tier((uint32_t)w, (uint32_t)lv - 1);
+            node(cx, cy, hs, x->rare, lit_to[w] >= lv, w == g_cw && lv == g_clv, renamed || lv == 1, lv == x->top);
+        }
     }
     ImDrawList_PopClipRect(g_dl);
+#undef RY
+#undef CX
 }
 
-static void draw_weapon_card(float x0, float y0, float x1, float y1, int w, int lv) {
+static void draw_weapon_needs(float x0, float y0, float x1, float y1, int w, int lv) {
     panel(x0, y0, x1, y1);
     const Weapon *wp = &g_w[w];
-    if (lv < 1) lv = 1;
-    if (lv > wp->top) lv = wp->top;
-    const uint8_t *b0 = base_of((uint32_t)w), *e = level_of((uint32_t)w, (uint32_t)lv);
     char line[200], nm[96];
     Buf b = {line, 0, sizeof line};
     float x = x0 + g_fs * 0.8f, xr = x1 - g_fs * 0.8f, y = y0 + g_fs * 0.5f;
     weapon_name(g_type, (uint32_t)w, name_tier((uint32_t)w, (uint32_t)lv), nm, sizeof nm);
-    text_s(x, y, 1.2f, 0xfff0f0f0, nm);
-    y += g_fs * 1.5f;
-    b.n = 0, put(&b, "레어 "), put_int(&b, wp->rare);
-    text(x, y, rare_colour(wp->rare), line);
+    text_s(x, y, 1.1f, 0xfff0f0f0, nm), y += g_fs * 1.45f;
     b.n = 0, put(&b, "Lv "), put_int(&b, lv), put(&b, " / "), put_int(&b, wp->top);
-    text(x + g_fs * 4.5f, y, 0xffc0c0c0, line);
-    y += g_fs * 1.35f;
-    rule(x0 + 4, x1 - 4, y), y += g_fs * 0.35f;
+    text_s(x, y, 0.9f, 0xffc0c0c0, line);
+    ImDrawList_AddRectFilled(g_dl, V2(x + g_fs * 4.5f, y + g_fs * 0.35f), V2(xr, y + g_fs * 0.55f), rare_colour(wp->rare), 0, 0);
+    y += g_fs * 1.4f;
+    ImDrawList_PushClipRect(g_dl, V2(x0, y), V2(x1, y1 - g_fs * 2.6f), true);
+    const uint8_t *b0 = base_of((uint32_t)w), *mats = NULL;
+    int n = 0, stride = 0, key = 0, cost = -1;
+    const char *how = "";
+    if (lv == 1 && wp->parent >= 0) {
+        mats = proc_of((uint32_t)w, 1), n = 4, stride = 3, how = "파생 강화";
+        if (mats) mats += 4;
+    } else if (lv == 1) {
+        mats = create_of((uint32_t)w), n = 4, stride = 4, key = 1, how = "생산";
+        if (mats) mats += 6, cost = b0 ? (int)rd32(b0 + 0xc) : -1;
+    } else {
+        mats = proc_of((uint32_t)w, (uint32_t)lv), n = 4, stride = 3, how = "강화";
+        if (mats) mats += 4;
+    }
+    b.n = 0, put(&b, "필요 소재  ("), put(&b, how);
+    if (lv == 1 && wp->parent >= 0) {
+        weapon_name(g_type, (uint32_t)wp->parent, name_tier((uint32_t)wp->parent, wp->from_lv), nm, sizeof nm);
+        put(&b, ": "), put(&b, nm), put(&b, " Lv"), put_int(&b, wp->from_lv);
+    } else if (lv > 1) put(&b, ": Lv"), put_int(&b, lv - 1), put(&b, " > "), put_int(&b, lv);
+    put(&b, ")");
+    if (mats) y = materials(x, xr, y, line, mats, n, stride, key);
+    else text_s(x, y, 0.9f, 0xff909090, lv == 1 ? "생산할 수 없는 무기 (파생 / 특수 입수)" : "(정보 없음)"), y += g_fs * 1.3f;
+    if (lv == 1 && wp->parent >= 0 && create_of((uint32_t)w)) {  // (made from materials alone too)
+        const uint8_t *c = create_of((uint32_t)w);
+        y = materials(x, xr, y, "처음부터 생산", c + 6, 4, 4, 1);
+        cost = b0 ? (int)rd32(b0 + 0xc) : -1;
+    }
+    ImDrawList_PopClipRect(g_dl);
+    float by = y1 - g_fs * 2.3f;
+    ImDrawList_AddRectFilled(g_dl, V2(x0 + 4, by), V2(x1 - 4, y1 - 4), 0xff2a2620, g_fs * 0.2f, 0);
+    text_s(x, by + g_fs * 0.1f, 0.85f, 0xffc0c0c0, "필요 비용");
+    b.n = 0;
+    if (cost >= 0) put_int(&b, cost), put(&b, " z");
+    else put(&b, "- z");
+    text_s(xr - text_w(line) * 1.1f, by + g_fs * 0.8f, 1.1f, 0xfff0f0f0, line);
+    if (!g_have_ok) text_s(x, y, 0.8f, 0xff808080, "(아이템 상자를 읽지 못함: 보유 수 없음)");
+}
+
+static void draw_weapon_detail(float x0, float y0, float x1, float y1, int w, int lv) {
+    panel(x0, y0, x1, y1);
+    const Weapon *wp = &g_w[w];
+    const uint8_t *b0 = base_of((uint32_t)w), *e = level_of((uint32_t)w, (uint32_t)lv);
+    char line[200], nm[96];
+    Buf b = {line, 0, sizeof line};
+    float x = x0 + g_fs * 0.7f, xr = x1 - g_fs * 0.7f, xv = x + (xr - x) * 0.45f, y = y0 + g_fs * 0.4f;
+    ImDrawList_AddRectFilled(g_dl, V2(x0 + 3, y0 + 3), V2(x1 - 3, y0 + g_fs * 1.6f), 0xff3a4a20, g_fs * 0.2f, 0);
+    text_s(x, y, 0.95f, 0xfff0f0f0, "장비 세부 정보"), y += g_fs * 1.6f;
+    weapon_name(g_type, (uint32_t)w, name_tier((uint32_t)w, (uint32_t)lv), nm, sizeof nm);
+    text_s(x, y, 0.95f, 0xfff0f0f0, nm), y += g_fs * 1.25f;
+    b.n = 0, put(&b, "RARE "), put_int(&b, wp->rare);
+    text_s(xr - text_w(line), y, 1.0f, rare_colour(wp->rare), line), y += g_fs * 1.35f;
+#define ROW(label, col) (text_s(x, y, 0.9f, 0xffb8b8b8, label), text_s(xv, y, 0.9f, col, line), y += g_fs * 1.2f)
     if (e) {
         bool gun = gunner(g_type);
-        b.n = 0, put(&b, "공격력 "), put_int(&b, gun ? (int)rd16(e + 6) : (int)rd16(e + 8));
-        text(x, y, 0xffe8e8e8, line);
+        b.n = 0, put_int(&b, gun ? (int)rd16(e + 6) : (int)rd16(e + 8));
+        ROW("공격력", 0xfff0f0f0);
         if (!gun) {
-            int aff = (int8_t)e[11];
-            b.n = 0, put(&b, "회심률 "), put(&b, aff > 0 ? "+" : ""), put_int(&b, aff), put(&b, "%");
-            text(x + (xr - x) * 0.5f, y, aff < 0 ? 0xff7070ff : aff > 0 ? 0xff70e070 : 0xffe8e8e8, line);
-        }
-        y += g_fs * 1.2f;
-        if (!gun) {
-            int el = b0 ? b0[0x11] : 0;
-            b.n = 0, put(&b, "속성 ");
-            if (el > 0 && el < 10 && e[12]) put(&b, ELEMENT[el]), put(&b, " "), put_int(&b, e[12] * 10);
-            else put(&b, "없음");
-            text(x, y, el > 0 && el < 10 && e[12] ? ELEMENT_COL[el] : 0xffe8e8e8, line);
-            b.n = 0, put(&b, "슬롯 "), slots_text(&b, e[LEVEL_STRIDE[g_type] - 1]);
-            text(x + (xr - x) * 0.5f, y, 0xffe8e8e8, line);
+            text_s(x, y, 0.9f, 0xffb8b8b8, "예리도");
+            sharpness_bar(xv, y + g_fs * 0.2f, xr - xv, g_fs * 0.55f, e[6]);
             y += g_fs * 1.2f;
-            if (e[10]) {
-                b.n = 0, put(&b, "방어력 +"), put_int(&b, e[10]);
-                text(x, y, 0xffe8e8e8, line), y += g_fs * 1.2f;
-            }
-            text(x, y, 0xffe8e8e8, "예리도");
-            sharpness_bar(x + g_fs * 3.4f, y + g_fs * 0.2f, xr - x - g_fs * 3.4f, g_fs * 0.6f, e[6]);
-            y += g_fs * 1.3f;
+            int aff = (int8_t)e[11];
+            b.n = 0, put(&b, aff > 0 ? "+" : ""), put_int(&b, aff), put(&b, "%");
+            ROW("회심률", aff < 0 ? 0xff7070ff : aff > 0 ? 0xff70e070 : 0xfff0f0f0);
+            int el = b0 ? b0[0x11] : 0;
+            b.n = 0;
+            if (el > 0 && el < 10 && e[12]) put(&b, ELEMENT[el]), put(&b, " "), put_int(&b, e[12] * 10);
+            else put(&b, "-");
+            ROW("속성", el > 0 && el < 10 && e[12] ? ELEMENT_COL[el] : 0xfff0f0f0);
+            b.n = 0;
+            if (e[10]) put(&b, "+"), put_int(&b, e[10]);
+            else put(&b, "-");
+            ROW("방어력", 0xfff0f0f0);
+            b.n = 0, slots_text(&b, e[LEVEL_STRIDE[g_type] - 1]);
+            ROW("슬롯", 0xfff0f0f0);
         }
     }
-    rule(x0 + 4, x1 - 4, y), y += g_fs * 0.35f;
-    // its names by level
+#undef ROW
+    y += g_fs * 0.3f;
+    rule(x0 + 4, x1 - 4, y), y += g_fs * 0.4f;
+    text_s(x, y, 0.85f, 0xff50d0ff, "이름 (레벨별)"), y += g_fs * 1.15f;
     int s1 = wp->s1, top = wp->top;
     for (int k = 0; k < 3; k++) {
         int a = k == 0 ? 1 : k == 1 ? s1 : top, z = k == 0 ? (s1 ? s1 - 1 : top - 1) : k == 1 ? top - 1 : top;
         if (k == 1 && (!s1 || s1 > top - 1)) continue;
         if (k == 2 && top < 2) continue;
-        if (k == 0 && top >= 2 && z < 1) continue;
+        if (k == 0 && z < 1) z = 1;
         weapon_name(g_type, (uint32_t)w, k, nm, sizeof nm);
+        bool here = name_tier((uint32_t)w, (uint32_t)lv) == k;
         b.n = 0, put(&b, "Lv"), put_int(&b, a);
         if (z > a) put(&b, "-"), put_int(&b, z);
-        bool here = name_tier((uint32_t)w, (uint32_t)lv) == k;
-        text_s(x, y, 0.88f, here ? 0xff70e8ff : 0xff909090, line);
-        text_s(x + g_fs * 3.6f, y, 0.88f, here ? 0xff70e8ff : 0xffc8c8c8, nm);
-        y += g_fs * 1.05f;
+        text_s(x, y, 0.8f, here ? 0xff70e8ff : 0xff909090, line), y += g_fs * 0.9f;
+        text_s(x + g_fs * 0.5f, y, 0.85f, here ? 0xff70e8ff : 0xffc8c8c8, nm), y += g_fs * 1.1f;
     }
-    y += g_fs * 0.3f;
-    rule(x0 + 4, x1 - 4, y), y += g_fs * 0.35f;
-    ImDrawList_PushClipRect(g_dl, V2(x0, y), V2(x1, y1 - 2), true);
-    const uint8_t *c = create_of((uint32_t)w);
-    if (c) {
-        b.n = 0, put(&b, "생산");
-        if (b0) put(&b, "  "), put_int(&b, (int)rd32(b0 + 0xc)), put(&b, "z");
-        y = materials(x, xr, y, line, c + 6, 4, 4, 1);
+    if (y < y1 - g_fs * 2.4f) {
+        text_s(x, y1 - g_fs * 2.3f, 0.75f, 0xff808080, "R스틱: 트리 이동");
+        text_s(x, y1 - g_fs * 1.3f, 0.75f, 0xff808080, "R3: 트리 숨기기/보이기");
     }
-    if (wp->parent >= 0) {
-        const uint8_t *p = proc_of((uint32_t)w, 1);
-        weapon_name(g_type, (uint32_t)wp->parent, name_tier((uint32_t)wp->parent, wp->from_lv), nm, sizeof nm);
-        b.n = 0, put(&b, "파생: "), put(&b, nm), put(&b, " Lv"), put_int(&b, wp->from_lv), put(&b, "에서");
-        if (p) y = materials(x, xr, y, line, p + 4, 4, 3, 0);
-    }
-    if (lv < top) {
-        const uint8_t *p = proc_of((uint32_t)w, (uint32_t)lv + 1);
-        b.n = 0, put(&b, "강화: Lv"), put_int(&b, lv), put(&b, " > Lv"), put_int(&b, lv + 1);
-        if (p) y = materials(x, xr, y, line, p + 4, 4, 3, 0);
-    }
-    if (!g_have_ok) text_s(x, y, 0.85f, 0xff808080, "(아이템 상자를 읽지 못했어요: 보유 수 없음)");
-    ImDrawList_PopClipRect(g_dl);
 }
 
 // ---- armor
@@ -856,19 +981,28 @@ static void log_box_once(void) {
 
 void forge_onImGuiFreeRender(void) {
     if (!g_original || g_frame - g_seen_frame > 2 || !g_now.id) return;  // (the smithy not open, or nothing selected)
+    static uint32_t last;
+    bool fresh = last != g_frame;  // (input: once a game frame)
+    last = g_frame;
+    if (fresh && forge_input_isPressed(5)) g_hidden = !g_hidden;  // (R3)
+    if (g_hidden) return;
     ImGuiIO *io = igGetIO_Nil();
     float W = io->DisplaySize.x, H = io->DisplaySize.y;
     g_dl = igGetForegroundDrawList_Nil(), g_fs = igGetFontSize();
-    float y0 = H * 0.145f, y1 = H * 0.805f, tx0 = W * 0.265f, tx1 = W * 0.655f, cx1 = W * 0.985f;
+    float y0 = H * 0.125f, y1 = H * 0.875f;
     read_box();
     log_box_once();
     int cat = g_now.category;
     if (cat >= 7 && cat - 7 < TYPES && cat - 7 != 5) {
         if (!load_type(cat - 7) || g_now.id >= g_nbase || !g_w[g_now.id].top) return;
-        draw_weapon_tree(tx0, y0, tx1, y1, g_now.id);
-        draw_weapon_card(tx1 + g_fs * 0.4f, y0, cx1, y1, g_now.id, g_now.level);
+        cursor_from_game();
+        if (fresh) cursor_move();
+        if (g_cw < 0 || g_cw >= (int)g_nbase) return;
+        draw_weapon_tree(W * 0.015f, y0, W * 0.585f, y1);
+        draw_weapon_needs(W * 0.592f, y0, W * 0.79f, y1, g_cw, g_clv);
+        draw_weapon_detail(W * 0.797f, y0, W * 0.985f, y1, g_cw, g_clv);
     } else if (cat < 7) {
         if (!load_armor() || g_now.id >= g_naser) return;
-        draw_armor(tx0, tx1, cx1, y0, y1, g_now.id, cat < 5 ? cat : -1);
+        draw_armor(W * 0.265f, W * 0.655f, W * 0.985f, y0, y1, g_now.id, cat < 5 ? cat : -1);
     }
 }
