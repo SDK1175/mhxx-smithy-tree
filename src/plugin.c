@@ -24,7 +24,7 @@
 #define CIMGUI_DEFINE_ENUMS_AND_STRUCTS
 #include "cimgui.h"
 
-#define VERSION "0.1.0"
+#define VERSION "0.2.0"
 
 // ------------------------------------------------------------------ the little of libc it needs (no libc here; hidden:
 // not offered to other plugins)
@@ -163,12 +163,6 @@ static void name_of(int t, uint32_t weapon, int which, char *out, uint32_t cap) 
         if (*c == '\n') *c = ' ';
 }
 
-static void top_level(uint32_t weapon, int *maxlv, int *attack) {
-    *maxlv = 0, *attack = 0;
-    for (uint32_t i = 0; i < g_nlevel; i++) {
-        const uint8_t *e = g_level + 8 + 15 * i;
-        if (e[4] == weapon && e[5] > *maxlv) *maxlv = e[5], *attack = (int)rd16(e + 8);
-    }
 }
 
 // ------------------------------------------------------------------ the smithy
@@ -192,21 +186,49 @@ static void smithy_update(uint32_t obj) {
     g_seen_frame = g_frame;
 }
 
-// ------------------------------------------------------------------ the panel
-#define CHILDREN 8
-static struct {
-    int type;
-    uint32_t weapon;
-    int ntiers, low[3], top[3], attack[3];
-    char tier[3][96];
-    uint32_t parent;
-    char parent_name[96];
-    int nchildren, child_top[CHILDREN], child_attack[CHILDREN];
-    char child[CHILDREN][96];
-} g_view = {.type = -1};
+// ------------------------------------------------------------------ the tree (one weapon type at a time)
+// A row a weapon, in the order of the smithy's recipes: a line's first weapon, then what is made from it (depth first).
+// Its node sits in the column of its rarity at level 1; a bar runs to the column of its rarity at its top level (MHXX
+// weapons climb rarities as they level), ticks where it is renamed; a line from a weapon's bar to what is made from it.
+#define ROWS 160
+typedef struct {
+    uint16_t weapon, depth;
+    int16_t parent_row;
+    uint8_t rare_low, rare_top, top, ntiers;
+    uint8_t tier_rare[4];  // the rarity where each name starts
+    int attack;
+    char name[64];
+} Row;
+static Row g_rows[ROWS];
+static int g_nrows, g_rows_type = -1;
 
-static bool build_view(int t, uint32_t w) {
-    if (g_view.type == t && g_view.weapon == w) return true;
+static int rarity(const uint8_t *e) { return e[7] / 2 + 1; }  // (LevelData +7: (rarity - 1) x 2)
+
+static void add_row(int t, uint32_t w, int depth, int parent, uint8_t *seen) {
+    if (w >= 256 || seen[w] || g_nrows >= ROWS) return;
+    seen[w] = 1;
+    Row *r = &g_rows[g_nrows];
+    int me = g_nrows++;
+    memset(r, 0, sizeof *r);
+    r->weapon = (uint16_t)w, r->depth = (uint16_t)depth, r->parent_row = (int16_t)parent;
+    for (uint32_t i = 0; i < g_nlevel; i++) {
+        const uint8_t *e = g_level + 8 + 15 * i;
+        if (e[4] != w) continue;
+        int k = e[14] > 3 ? 3 : e[14];
+        if (!r->rare_low || e[5] == 1) r->rare_low = (uint8_t)rarity(e);
+        if (e[5] >= r->top) r->top = e[5], r->rare_top = (uint8_t)rarity(e), r->attack = (int)rd16(e + 8);
+        if (k + 1 > r->ntiers) r->ntiers = (uint8_t)(k + 1);
+        if (!r->tier_rare[k] || rarity(e) < r->tier_rare[k]) r->tier_rare[k] = (uint8_t)rarity(e);
+    }
+    name_of(t, w, 0, r->name, sizeof r->name);
+    for (uint32_t i = 0; i < g_ncreate; i++) {
+        const uint8_t *e = g_create + 8 + 38 * i;
+        if (rd16(e) == 1 && rd16(e + 4) == w && rd16(e + 2) != w) add_row(t, rd16(e + 2), depth + 1, me, seen);
+    }
+}
+
+static bool build_rows(int t) {
+    if (g_rows_type == t) return true;
     if (!load(t)) return false;
     if (!g_names[t]) {
         static uint32_t tried[TYPES];
@@ -218,88 +240,86 @@ static bool build_view(int t, uint32_t w) {
         put(&b, "table\\weapon"), put(&b, tt), put(&b, "MsgData_jpn");
         if (!(g_names[t] = mhxx_resource_find(path))) return false;
     }
-    memset(&g_view, 0, sizeof g_view);
-    g_view.type = t, g_view.weapon = w;
-    for (uint32_t i = 0; i < g_nlevel; i++) {  // (its levels: a tier for each of its names)
-        const uint8_t *e = g_level + 8 + 15 * i;
-        int k = e[14];
-        if (e[4] != w || k > 2) continue;
-        if (!g_view.top[k] || e[5] < g_view.low[k]) g_view.low[k] = e[5];
-        if (e[5] > g_view.top[k]) g_view.top[k] = e[5], g_view.attack[k] = (int)rd16(e + 8);
-        if (k + 1 > g_view.ntiers) g_view.ntiers = k + 1;
-    }
-    for (int k = 0; k < g_view.ntiers; k++) name_of(t, w, k, g_view.tier[k], sizeof g_view.tier[k]);
-    for (uint32_t i = 0; i < g_ncreate; i++) {  // (made from; made from it)
+    uint8_t seen[256] = {0};
+    g_nrows = 0;
+    for (uint32_t i = 0; i < g_ncreate; i++) {  // (the lines' first weapons, made from materials alone)
         const uint8_t *e = g_create + 8 + 38 * i;
-        uint32_t made = rd16(e + 2), from = rd16(e + 4);
-        if (made == w && from && from != w && !g_view.parent) {
-            g_view.parent = from;
-            name_of(t, from, 0, g_view.parent_name, sizeof g_view.parent_name);
-        }
-        if (from == w && made != w && g_view.nchildren < CHILDREN) {
-            int k = g_view.nchildren++;
-            top_level(made, &g_view.child_top[k], &g_view.child_attack[k]);
-            name_of(t, made, 0, g_view.child[k], sizeof g_view.child[k]);
-        }
+        uint32_t from = rd16(e + 4), w = rd16(e + 2);
+        if (rd16(e) == 1 && (!from || from == w)) add_row(t, w, 0, -1, seen);
     }
+    for (uint32_t i = 0; i < g_ncreate; i++) {  // (made from a weapon no recipe makes: their own lines)
+        const uint8_t *e = g_create + 8 + 38 * i;
+        if (rd16(e) == 1) add_row(t, rd16(e + 2), 0, -1, seen);
+    }
+    g_rows_type = t;
     return true;
 }
 
 static const char *const TYPE_NAME[TYPES] = {"대검", "한손검", "해머", "랜스", "헤비보우건", "", "라이트보우건", "태도",
                                              "슬래시액스", "건랜스", "활", "쌍검", "수렵피리", "조충곤", "차지액스"};
 
-static void text(const char *s, ImVec4 c) {
-    igPushStyleColor_Vec4(ImGuiCol_Text, c);
-    igTextUnformatted(s, NULL);
-    igPopStyleColor(1);
+// MH's rarity colours (as the game's icons: 1 white .. 10 purple)
+static ImU32 rare_colour(int r) {
+    static const ImU32 c[11] = {0xffd0d0d0, 0xffe8e8e8, 0xffc8a070, 0xff40c0a0, 0xff40a8f0, 0xffd080c0,
+                                0xff3050e0, 0xff50c8e8, 0xff9090f8, 0xffe0e040, 0xfff060c0};
+    return c[r < 0 ? 0 : r > 10 ? 10 : r];
 }
+#define V2(x, y) ((ImVec2){(x), (y)})
 
-static void draw(void) {
+static void draw_tree(int sel_row) {
     ImGuiIO *io = igGetIO_Nil();
-    float w = io->DisplaySize.x, h = io->DisplaySize.y;
-    igSetNextWindowPos((ImVec2){w * 0.015f, h * 0.17f}, ImGuiCond_Always, (ImVec2){0, 0});
-    igSetNextWindowSize((ImVec2){w * 0.245f, 0}, ImGuiCond_Always);
-    igSetNextWindowBgAlpha(0.88f);
-    ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav |
-                             ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_AlwaysAutoResize |
-                             ImGuiWindowFlags_NoSavedSettings;
-    if (igBegin("##mhxx_smithy_tree", NULL, flags)) {
-        const ImVec4 gold = {1.0f, 0.82f, 0.3f, 1}, dim = {0.65f, 0.65f, 0.65f, 1}, here = {1.0f, 0.95f, 0.55f, 1},
-                     white = {1, 1, 1, 1};
-        char line[256];
-        Buf b = {line, 0, sizeof line};
-        put(&b, TYPE_NAME[g_view.type]), put(&b, " 트리");
-        text(line, gold);
-        igSeparator();
-        if (g_view.parent) {
-            text(g_view.parent_name, dim);
-            text("  -> 에서 파생", dim);
+    float W = io->DisplaySize.x, H = io->DisplaySize.y, fs = igGetFontSize();
+    ImDrawList *dl = igGetForegroundDrawList_Nil();
+    float x0 = W * 0.265f, y0 = H * 0.145f, x1 = W * 0.985f, y1 = H * 0.805f;
+    ImDrawList_AddRectFilled(dl, V2(x0, y0), V2(x1, y1), 0xe8181410, fs * 0.4f, 0);
+    ImDrawList_AddRect(dl, V2(x0, y0), V2(x1, y1), 0xff4080c0, fs * 0.4f, 2.0f, 0);
+    char line[128];
+    Buf b = {line, 0, sizeof line};
+    put(&b, TYPE_NAME[g_rows_type]), put(&b, " 트리");
+    ImDrawList_AddText_Vec2(dl, V2(x0 + fs, y0 + fs * 0.5f), 0xff50d0ff, line, NULL);
+    float names_w = (x1 - x0) * 0.30f, gx0 = x0 + names_w, gx1 = x1 - fs, top = y0 + fs * 2.2f;
+    int cols = 10;
+    float colw = (gx1 - gx0) / (float)cols, rowh = fs * 1.9f;
+    for (int c = 0; c < cols; c++) {  // (the rarity columns)
+        float cx = gx0 + colw * (float)c;
+        ImDrawList_AddLine(dl, V2(cx, top), V2(cx, y1 - fs * 0.5f), 0x30ffffff, 1.0f);
+        b.n = 0, put(&b, "R"), put_int(&b, c + 1);
+        ImDrawList_AddText_Vec2(dl, V2(cx + colw * 0.35f, y0 + fs * 0.5f), 0xff808080, line, NULL);
+    }
+    int visible = (int)((y1 - top - fs * 0.5f) / rowh);
+    static float scroll;  // (in rows: eased towards the selection)
+    float want = (float)sel_row - (float)visible / 2.0f;
+    if (want > (float)(g_nrows - visible)) want = (float)(g_nrows - visible);
+    if (want < 0) want = 0;
+    scroll += (want - scroll) * 0.25f;
+    ImDrawList_PushClipRect(dl, V2(x0, top), V2(x1, y1 - fs * 0.3f), true);
+    for (int i = 0; i < g_nrows; i++) {
+        const Row *r = &g_rows[i];
+        float y = top + ((float)i - scroll) * rowh, cy = y + rowh * 0.5f;
+        if (y + rowh < top || y > y1) continue;
+        bool sel = i == sel_row;
+        if (sel) ImDrawList_AddRectFilled(dl, V2(x0 + 2, y), V2(x1 - 2, y + rowh), 0x40ffd060, 0, 0);
+        ImDrawList_AddText_Vec2(dl, V2(x0 + fs * (0.8f + 0.9f * (float)r->depth), cy - fs * 0.5f),
+                                sel ? 0xff70e8ff : 0xffe0e0e0, r->name, NULL);
+        float nx = gx0 + colw * ((float)r->rare_low - 0.5f), ex = gx0 + colw * ((float)r->rare_top - 0.5f);
+        ImDrawList_AddLine(dl, V2(nx, cy), V2(ex, cy), rare_colour(r->rare_top), fs * 0.25f);  // (its levels)
+        for (int k = 1; k < r->ntiers; k++) {  // (renamed here)
+            float tx = gx0 + colw * ((float)r->tier_rare[k] - 0.5f);
+            ImDrawList_AddCircleFilled(dl, V2(tx, cy), fs * 0.22f, rare_colour(r->tier_rare[k]), 12);
         }
-        for (int k = 0; k < g_view.ntiers; k++) {
-            bool on = (int)g_now.level >= g_view.low[k] && (int)g_now.level <= g_view.top[k];
-            if (k) text("     |", dim);
-            b.n = 0;
-            put(&b, on ? "> Lv" : "  Lv"), put_int(&b, g_view.low[k]);
-            if (g_view.top[k] != g_view.low[k]) put(&b, "-"), put_int(&b, g_view.top[k]);
-            put(&b, "  "), put(&b, g_view.tier[k]);
-            text(line, on ? here : white);
-            igSameLine(0, -1);
-            b.n = 0, put(&b, "  공격 "), put_int(&b, g_view.attack[k]);
-            text(line, dim);
-        }
-        if (g_view.nchildren) {
-            igSpacing();
-            text("파생", gold);
-            for (int k = 0; k < g_view.nchildren; k++) {
-                b.n = 0, put(&b, "  - "), put(&b, g_view.child[k]);
-                text(line, white);
-                igSameLine(0, -1);
-                b.n = 0, put(&b, "  Lv"), put_int(&b, g_view.child_top[k]), put(&b, ", 공격 "), put_int(&b, g_view.child_attack[k]);
-                text(line, dim);
-            }
+        float hs = fs * 0.55f;
+        ImDrawList_AddRectFilled(dl, V2(nx - hs, cy - hs), V2(nx + hs, cy + hs), rare_colour(r->rare_low), fs * 0.15f, 0);
+        if (sel) ImDrawList_AddRect(dl, V2(nx - hs - 3, cy - hs - 3), V2(nx + hs + 3, cy + hs + 3), 0xff40e0ff, fs * 0.2f, 2.5f, 0);
+        b.n = 0, put(&b, "Lv"), put_int(&b, r->top), put(&b, "  "), put_int(&b, r->attack);
+        ImDrawList_AddText_Vec2(dl, V2(ex + fs * 0.4f, cy - fs * 0.5f), 0xff909090, line, NULL);
+        if (r->parent_row >= 0) {  // (made from the row above: an elbow from its bar's end)
+            const Row *p = &g_rows[r->parent_row];
+            float px = gx0 + colw * ((float)p->rare_top - 0.5f), py = top + ((float)r->parent_row - scroll) * rowh + rowh * 0.5f;
+            ImDrawList_AddLine(dl, V2(px, py), V2(px, cy), 0xffb0b0b0, 1.5f);
+            ImDrawList_AddLine(dl, V2(px, cy), V2(nx - hs, cy), 0xffb0b0b0, 1.5f);
         }
     }
-    igEnd();
+    ImDrawList_PopClipRect(dl);
 }
 
 // ------------------------------------------------------------------ Forge's calls
@@ -324,6 +344,9 @@ void forge_onImGuiFreeRender(void) {
     if (!g_original || g_frame - g_seen_frame > 2) return;  // (the smithy not open)
     int cat = g_now.category;
     if (cat < 7 || cat - 7 >= TYPES || cat - 7 == 5 || !g_now.weapon) return;
-    if (!build_view(cat - 7, g_now.weapon)) return;
-    draw();
+    if (!build_rows(cat - 7)) return;
+    int sel = -1;
+    for (int i = 0; i < g_nrows; i++)
+        if (g_rows[i].weapon == g_now.weapon) sel = i;
+    draw_tree(sel);
 }
