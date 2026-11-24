@@ -1430,7 +1430,7 @@ void forge_onImGuiFreeRender(void) {
         g_want_id = g_cw;  // (the game's list follows: its 3D preview shows the weapon)
         bool can = false;
         if (pressed(B_A)) {  // (A: the game's own A on this weapon - to make or upgrade it)
-            if (g_want_result < 0) toast("이 무기는 지금 게임 목록에 없어요 (해금 전이거나 목록의 다른 페이지)");
+            if (g_want_result < 0) toast(g_w[g_cw].parent >= 0 && !create_of((uint32_t)g_cw) ? "파생 무기는 대장간의 '장비 강화'에서 이전 무기를 강화해서 만들어요" : "이 무기는 지금 게임 목록에 없어요 (해금 전이거나 소재 정보가 아직 없어요)");
             else {
                 g_hidden = true, hid_at = state, left = false;
                 mhxx_input_capture(0);
