@@ -43,7 +43,7 @@
 #define CIMGUI_DEFINE_ENUMS_AND_STRUCTS
 #include "cimgui.h"
 
-#define VERSION "0.6.0"
+#define VERSION "0.7.0"
 
 // ------------------------------------------------------------------ the little of libc it needs (no libc here; hidden:
 // not offered to other plugins)
@@ -468,7 +468,7 @@ static void (*g_original)(uint32_t);
 static uint32_t g_seen_frame;
 static struct { uint8_t screen, sub; uint16_t category, id, level, rows, cursor; } g_now;
 
-static int g_want_id = -1;  // (A: the game's list cursor to this weapon, if the list has it)
+static int g_want_id = -1;  // (the game's list cursor to this weapon, if the list has it: its 3D preview follows)
 static int g_want_result;   // 1 done, -1 not in the list
 static void smithy_update(uint32_t obj) {
     g_original(obj);
@@ -479,10 +479,19 @@ static void smithy_update(uint32_t obj) {
         for (uint32_t i = 0; i < n && n <= 64; i++) {
             uint32_t row = obj + 0x28d4 + i * 0x30u;
             if (!(G16(row) & 0x210) && G16(row + 2) == g_want_id) {
-                *(volatile uint8_t *)(uintptr_t)(obj + 0x1f71) = (uint8_t)i;
+                if (G8(obj + 0x1f71) != i) *(volatile uint8_t *)(uintptr_t)(obj + 0x1f71) = (uint8_t)i;
                 g_want_result = 1;
                 break;
             }
+        }
+        static int logged = 99;
+        if (g_want_result != logged) {
+            logged = g_want_result;
+            char l[96];
+            Buf b = {l, 0, sizeof l};
+            put(&b, "[SmithyTree] the game's list cursor to weapon "), put_int(&b, g_want_id),
+                put(&b, g_want_result > 0 ? ": set (its 3D preview should follow)" : ": not in the list");
+            log_line(l);
         }
         g_want_id = -1;
     }
@@ -1046,7 +1055,15 @@ void forge_onImGuiFreeRender(void) {
     if (g_hidden) return;
     mhxx_input_capture(150);  // (the controller is the screen's while it is up)
     float y0 = H * 0.11f, y1 = H * 0.86f;
-    ImDrawList_AddRectFilled(g_dl, V2(0, y0 - H * 0.015f), V2(W, H * 0.93f), 0xff0c0805, 0, 0);
+    // the game's own 3D preview of the weapon stays seen (its frame on the left): the backdrop round it
+    float px0 = W * 0.012f, py0 = H * 0.174f, px1 = W * 0.258f, py1 = H * 0.670f, by0 = y0 - H * 0.015f, by1 = H * 0.93f;
+    bool hole = weapons;
+    if (hole) {
+        ImDrawList_AddRectFilled(g_dl, V2(0, by0), V2(W, py0), 0xff0c0805, 0, 0);
+        ImDrawList_AddRectFilled(g_dl, V2(0, py1), V2(W, by1), 0xff0c0805, 0, 0);
+        ImDrawList_AddRectFilled(g_dl, V2(0, py0), V2(px0, py1), 0xff0c0805, 0, 0);
+        ImDrawList_AddRectFilled(g_dl, V2(px1, py0), V2(W, py1), 0xff0c0805, 0, 0);
+    } else ImDrawList_AddRectFilled(g_dl, V2(0, by0), V2(W, by1), 0xff0c0805, 0, 0);
     read_box();
     log_box_once();
     int dir = fresh ? pad_dir() : 0;
@@ -1069,15 +1086,28 @@ void forge_onImGuiFreeRender(void) {
             if (g_clv > g_w[g_cw].top) g_clv = g_w[g_cw].top;
         }
         cursor_move(dir);
-        if (fresh && forge_input_isPressed(0)) {  // (A: to the game's list on this weapon, there to make or upgrade it)
+        g_want_id = g_view == cat - 7 ? g_cw : -1;  // (the game's list follows: its 3D preview shows the weapon)
+        if (fresh && forge_input_isPressed(0)) {  // (A: back to the game's list, on this weapon, to make or upgrade it)
             if (g_view != cat - 7) toast("게임 목록의 무기 종류가 달라요: 게임 화면에서 종류를 바꾼 뒤 다시 열어 주세요 (R3)");
-            else g_want_id = g_cw, g_hidden = true, toast("게임 목록에서 이 무기를 골랐어요 (목록에 없으면 그대로)");
+            else if (g_want_result < 0) toast("이 무기는 지금 게임 목록에 없어요 (해금 전이거나 다른 페이지)");
+            else g_hidden = true;
         }
-        draw_weapon_tree(W * 0.015f, y0, W * 0.585f, y1);
-        draw_weapon_needs(W * 0.592f, y0, W * 0.79f, y1, g_cw, g_clv);
-        draw_weapon_detail(W * 0.797f, y0, W * 0.985f, y1, g_cw, g_clv);
+        draw_weapon_tree(W * 0.265f, y0, W * 0.70f, y1);
+        draw_weapon_detail(W * 0.707f, y0, W * 0.985f, H * 0.47f, g_cw, g_clv);
+        draw_weapon_needs(W * 0.707f, H * 0.48f, W * 0.985f, y1, g_cw, g_clv);
+        {  // under the preview: whether it shows this weapon
+            float ly = py1 + H * 0.01f;
+            panel(px0, ly, px1, y1);
+            char nm[96];
+            weapon_name(g_type, (uint32_t)g_cw, name_tier((uint32_t)g_cw, (uint32_t)g_clv), nm, sizeof nm);
+            text_s(px0 + g_fs * 0.7f, ly + g_fs * 0.5f, 1.05f, rare_colour(g_w[g_cw].rare), nm);
+            const char *st = g_view != cat - 7 ? "미리보기: 게임 목록과 무기 종류가 달라요"
+                             : g_want_result < 0 ? "미리보기: 게임 목록에 없는 무기"
+                                                 : "미리보기: 이 무기  (A: 게임 목록으로)";
+            text_s(px0 + g_fs * 0.7f, ly + g_fs * 1.9f, 0.82f, 0xffa0a0a0, st);
+        }
         help_line(W, y1 + H * 0.012f,
-                  "방향키/스틱: 이동    L / R: 무기 종류    A: 게임 목록에서 이 무기 고르기    B: 닫기    R3: 열기 / 닫기");
+                  "방향키/스틱: 이동    L / R: 무기 종류    A: 이 무기로 게임 화면에 돌아가기 (생산 / 강화)    B: 닫기    R3: 열기 / 닫기");
     } else {
         if (!load_armor() || g_now.id >= g_naser) return;
         static int sel_row = -1, piece = 0;
