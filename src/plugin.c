@@ -882,6 +882,7 @@ static void draw_weapon_detail(float x0, float y0, float x1, float y1, int w, in
         text_s(x, y, 0.8f, here ? 0xff70e8ff : 0xff909090, line), y += g_fs * 0.9f;
         text_s(x + g_fs * 0.5f, y, 0.85f, here ? 0xff70e8ff : 0xffc8c8c8, nm), y += g_fs * 1.1f;
     }
+}
 
 // ---- armor
 static void draw_armor(float tx0, float tx1, float cx1, float y0, float y1, uint32_t sel, int piece) {
