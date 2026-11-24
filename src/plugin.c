@@ -43,7 +43,7 @@
 #define CIMGUI_DEFINE_ENUMS_AND_STRUCTS
 #include "cimgui.h"
 
-#define VERSION "0.5.0"
+#define VERSION "0.6.0"
 
 // ------------------------------------------------------------------ the little of libc it needs (no libc here; hidden:
 // not offered to other plugins)
@@ -468,9 +468,24 @@ static void (*g_original)(uint32_t);
 static uint32_t g_seen_frame;
 static struct { uint8_t screen, sub; uint16_t category, id, level, rows, cursor; } g_now;
 
+static int g_want_id = -1;  // (A: the game's list cursor to this weapon, if the list has it)
+static int g_want_result;   // 1 done, -1 not in the list
 static void smithy_update(uint32_t obj) {
     g_original(obj);
     if (obj < 0x08000000u || (obj & 3)) return;
+    if (g_want_id >= 0) {
+        uint16_t n = G16(obj + 0x1f78);
+        g_want_result = -1;
+        for (uint32_t i = 0; i < n && n <= 64; i++) {
+            uint32_t row = obj + 0x28d4 + i * 0x30u;
+            if (!(G16(row) & 0x210) && G16(row + 2) == g_want_id) {
+                *(volatile uint8_t *)(uintptr_t)(obj + 0x1f71) = (uint8_t)i;
+                g_want_result = 1;
+                break;
+            }
+        }
+        g_want_id = -1;
+    }
     uint8_t cursor = G8(obj + 0x1f71);
     uint16_t rows = G16(obj + 0x1f78), id = 0, level = 0;
     if (cursor < rows && rows <= 64) {
@@ -593,33 +608,41 @@ static void slots_text(Buf *b, int n) {
 
 // ---- weapons: the cursor (a weapon and a level), the tree, the materials, the details
 static int g_cw = -1, g_clv = 1;  // the tree's cursor
-static int g_cur_type = -1;
 static uint16_t g_game_id, g_game_lv;
 static bool g_hidden;
 
 static int col_of(int w, int lv) { return g_w[w].start + lv - 1; }
 
+static int g_view = -1;  // the weapon type on screen (L / R change it; the game's category sets it)
+static uint16_t g_game_cat;
 static void cursor_from_game(void) {
-    if (g_cur_type != g_type || g_now.id != g_game_id || g_now.level != g_game_lv) {
-        g_cur_type = g_type, g_game_id = g_now.id, g_game_lv = g_now.level;
-        g_cw = g_now.id, g_clv = g_now.level < 1 ? 1 : g_now.level;
-        if (g_clv > g_w[g_cw].top) g_clv = g_w[g_cw].top;
+    if (g_now.category != g_game_cat || g_now.id != g_game_id || g_now.level != g_game_lv || g_view < 0) {
+        g_game_cat = g_now.category, g_game_id = g_now.id, g_game_lv = g_now.level;
+        g_view = g_now.category - 7, g_cw = -1;
     }
 }
 
-void forge_input_getStickR(float *x, float *y);
+void mhxx_input_capture(uint32_t ms);
+bool forge_input_isDown(uint32_t button);
 bool forge_input_isPressed(uint32_t button);
-static void cursor_move(void) {
-    static int held, dir_prev;
-    float sx = 0, sy = 0;
-    forge_input_getStickR(&sx, &sy);
-    int dir = sx > 0.55f ? 1 : sx < -0.55f ? 2 : sy > 0.55f ? 3 : sy < -0.55f ? 4 : 0;
-    if (!dir || dir != dir_prev) held = 0;
-    dir_prev = dir;
-    if (!dir) return;
+// a direction from the d-pad or either stick: 1 right 2 left 3 up 4 down, repeating while held
+static int pad_dir(void) {
+    static int held, prev;
+    int dir = 0;
+    if (forge_input_isDown(14) || forge_input_isDown(18) || forge_input_isDown(22)) dir = 1;
+    else if (forge_input_isDown(12) || forge_input_isDown(16) || forge_input_isDown(20)) dir = 2;
+    else if (forge_input_isDown(13) || forge_input_isDown(17) || forge_input_isDown(21)) dir = 3;
+    else if (forge_input_isDown(15) || forge_input_isDown(19) || forge_input_isDown(23)) dir = 4;
+    if (!dir || dir != prev) held = 0;
+    prev = dir;
+    if (!dir) return 0;
     bool go = held == 0 || (held >= 14 && ((held - 14) & 3) == 0);
     held++;
-    if (!go || g_cw < 0) return;
+    return go ? dir : 0;
+}
+
+static void cursor_move(int dir) {
+    if (!dir || g_cw < 0) return;
     const Weapon *x = &g_w[g_cw];
     if (dir == 1) {  // right: the next level, past the last a weapon derived there
         if (g_clv < x->top) g_clv++;
@@ -635,6 +658,14 @@ static void cursor_move(void) {
         int c = col_of(g_cw, g_clv), w = g_rows[r], lv = c - g_w[w].start + 1;
         g_cw = w, g_clv = lv < 1 ? 1 : lv > g_w[w].top ? g_w[w].top : lv;
     }
+}
+
+static char g_toast[160];
+static uint32_t g_toast_frame;
+static void toast(const char *s) {
+    Buf b = {g_toast, 0, sizeof g_toast};
+    put(&b, s);
+    g_toast_frame = g_frame;
 }
 
 static void node(float cx, float cy, float hs, int rare, bool lit, bool sel, bool renamed, bool last) {
@@ -986,31 +1017,81 @@ static void log_box_once(void) {
     log_line(l);
 }
 
+static void help_line(float W, float y, const char *s) {
+    ImDrawList_AddRectFilled(g_dl, V2(W * 0.015f, y), V2(W * 0.985f, y + g_fs * 1.5f), 0xff1a130b, g_fs * 0.2f, 0);
+    text_s(W * 0.025f, y + g_fs * 0.2f, 0.9f, 0xffd8d8d8, s);
+}
+
 void forge_onImGuiFreeRender(void) {
-    if (!g_original || g_frame - g_seen_frame > 2 || !g_now.id) return;  // (the smithy not open, or nothing selected)
-    static uint32_t last;
-    bool fresh = last != g_frame;  // (input: once a game frame)
-    last = g_frame;
-    if (fresh && forge_input_isPressed(5)) g_hidden = !g_hidden;  // (R3)
-    if (g_hidden) return;
     ImGuiIO *io = igGetIO_Nil();
     float W = io->DisplaySize.x, H = io->DisplaySize.y;
     g_dl = igGetForegroundDrawList_Nil(), g_fs = igGetFontSize();
-    float y0 = H * 0.125f, y1 = H * 0.875f;
-    ImDrawList_AddRectFilled(g_dl, V2(0, y0 - H * 0.015f), V2(W, y1 + H * 0.015f), 0xff0c0805, 0, 0);
+    if (g_toast[0] && g_frame - g_toast_frame < 150) {  // (a word for the player, over the game too)
+        float w = text_w(g_toast) + g_fs * 2;
+        ImDrawList_AddRectFilled(g_dl, V2((W - w) * 0.5f, H * 0.06f), V2((W + w) * 0.5f, H * 0.06f + g_fs * 1.8f), 0xf01a130b,
+                                 g_fs * 0.3f, 0);
+        text((W - w) * 0.5f + g_fs, H * 0.06f + g_fs * 0.4f, 0xff70e8ff, g_toast);
+    }
+    static uint32_t last;
+    bool fresh = last != g_frame;  // (input: once a game frame)
+    last = g_frame;
+    if (!g_original || g_frame - g_seen_frame > 2 || !g_now.id) {  // (the smithy not open: the screen opens with it)
+        if (g_frame - g_seen_frame > 2) g_hidden = false, g_view = -1;
+        return;
+    }
+    int cat = g_now.category;
+    bool weapons = cat >= 7 && cat - 7 < TYPES && cat - 7 != 5, armor = cat < 7;
+    if (!weapons && !armor) return;
+    if (fresh && forge_input_isPressed(5)) g_hidden = !g_hidden;  // (R3: the screen, or the game's own)
+    if (g_hidden) return;
+    mhxx_input_capture(150);  // (the controller is the screen's while it is up)
+    float y0 = H * 0.11f, y1 = H * 0.86f;
+    ImDrawList_AddRectFilled(g_dl, V2(0, y0 - H * 0.015f), V2(W, H * 0.93f), 0xff0c0805, 0, 0);
     read_box();
     log_box_once();
-    int cat = g_now.category;
-    if (cat >= 7 && cat - 7 < TYPES && cat - 7 != 5) {
-        if (!load_type(cat - 7) || g_now.id >= g_nbase || !g_w[g_now.id].top) return;
+    int dir = fresh ? pad_dir() : 0;
+    if (fresh && forge_input_isPressed(1)) {  // (B: back to the game's own screen)
+        g_hidden = true;
+        return;
+    }
+    if (weapons) {
         cursor_from_game();
-        if (fresh) cursor_move();
-        if (g_cw < 0 || g_cw >= (int)g_nbase) return;
+        if (fresh && (forge_input_isPressed(6) || forge_input_isPressed(7))) {  // (L / R: the weapon type)
+            int step = forge_input_isPressed(6) ? -1 : 1, v = g_view;
+            do v = (v + step + TYPES) % TYPES; while (v == 5);
+            g_view = v, g_cw = -1;
+        }
+        if (!load_type(g_view)) return;
+        if (g_cw < 0 || g_cw >= (int)g_nbase || !g_w[g_cw].top) {
+            bool game = g_view == cat - 7 && g_now.id < g_nbase && g_w[g_now.id].top;
+            g_cw = game ? g_now.id : g_rows[0];
+            g_clv = game && g_now.level ? g_now.level : 1;
+            if (g_clv > g_w[g_cw].top) g_clv = g_w[g_cw].top;
+        }
+        cursor_move(dir);
+        if (fresh && forge_input_isPressed(0)) {  // (A: to the game's list on this weapon, there to make or upgrade it)
+            if (g_view != cat - 7) toast("게임 목록의 무기 종류가 달라요: 게임 화면에서 종류를 바꾼 뒤 다시 열어 주세요 (R3)");
+            else g_want_id = g_cw, g_hidden = true, toast("게임 목록에서 이 무기를 골랐어요 (목록에 없으면 그대로)");
+        }
         draw_weapon_tree(W * 0.015f, y0, W * 0.585f, y1);
         draw_weapon_needs(W * 0.592f, y0, W * 0.79f, y1, g_cw, g_clv);
         draw_weapon_detail(W * 0.797f, y0, W * 0.985f, y1, g_cw, g_clv);
-    } else if (cat < 7) {
+        help_line(W, y1 + H * 0.012f,
+                  "방향키/스틱: 이동    L / R: 무기 종류    A: 게임 목록에서 이 무기 고르기    B: 닫기    R3: 열기 / 닫기");
+    } else {
         if (!load_armor() || g_now.id >= g_naser) return;
-        draw_armor(W * 0.015f, W * 0.6f, W * 0.985f, y0, y1, g_now.id, cat < 5 ? cat : -1);
+        static int sel_row = -1, piece = 0;
+        static uint16_t from_id, from_cat;
+        if (sel_row < 0 || g_now.id != from_id || cat != from_cat) {
+            from_id = g_now.id, from_cat = (uint16_t)cat, piece = cat < 5 ? cat : 0, sel_row = 0;
+            for (int i = 0; i < g_narows; i++)
+                if (g_arows[i] == g_now.id) sel_row = i;
+        }
+        if (dir == 1 && piece < 4) piece++;
+        if (dir == 2 && piece > 0) piece--;
+        if (dir == 3 && sel_row > 0) sel_row--;
+        if (dir == 4 && sel_row + 1 < g_narows) sel_row++;
+        draw_armor(W * 0.015f, W * 0.6f, W * 0.985f, y0, y1, g_arows[sel_row], piece);
+        help_line(W, y1 + H * 0.012f, "방향키/스틱: 이동 (위아래 시리즈, 좌우 부위)    B: 닫기    R3: 열기 / 닫기");
     }
 }
