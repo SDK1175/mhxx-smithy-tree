@@ -163,8 +163,6 @@ static void name_of(int t, uint32_t weapon, int which, char *out, uint32_t cap) 
         if (*c == '\n') *c = ' ';
 }
 
-}
-
 // ------------------------------------------------------------------ the smithy
 #define FN_SMITHY_UPDATE 0x6e67d8u
 static ForgeHook g_hook;
