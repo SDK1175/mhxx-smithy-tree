@@ -38,6 +38,8 @@
 
 `./build.sh` (clang, ld.lld, python3). 결과: `build/mhxx_smithy_tree.nro`
 
+릴리즈 압축 파일: `./build.sh dist 0.13.0` → `dist/mhxx-smithy-tree-0.13.0.zip` (모드 폴더 구조 + 라이선스)
+
 ## 라이선스
 
 MIT (LICENSE). 포함된 서드파티: `link/` (forge-rs의 링커 스크립트, LICENSE.forge-rs), `third_party/cimgui/` (cimgui / Dear ImGui, MIT).
