@@ -43,7 +43,7 @@
 #define CIMGUI_DEFINE_ENUMS_AND_STRUCTS
 #include "cimgui.h"
 
-#define VERSION "0.12.1"
+#define VERSION "0.12.2"
 
 // ------------------------------------------------------------------ the little of libc it needs (no libc here; hidden:
 // not offered to other plugins)
@@ -727,21 +727,28 @@ static const ImU32 ELEMENT_COL[10] = {0xffffffff, 0xff3c6cff, 0xffffa040, 0xff30
 static const ImU32 SHARP_COL[7] = {0xff2828d8, 0xff2080f0, 0xff20e0f0, 0xff30d050, 0xfff08030, 0xfff8f8f8, 0xffd040b0};
 __attribute__((unused)) static const char *const PIECE[5] = {"머리", "몸통", "팔", "허리", "다리"};
 
-static void sharpness_bar(float x, float y, float w, float h, uint32_t id) {
+// The sharpness as the game draws it: kireajiData's entry is the whole bar (cumulative red .. purple, 450 at most); the
+// weapon has only the first 150 + 25 x (its level's +7 byte) of it (Bherna Lv1: 150, as the game's bar), and
+// Handicraft adds up to 50 more (drawn dim); the rest black.
+static void sharpness_bar(float x, float y, float w, float h, uint32_t id, uint32_t step) {
     if (id >= g_nkire) return;
     const uint8_t *k = g_kire + 8 + id * 14;
-    uint32_t prev = 0;
+    uint32_t base = 150 + 25 * step, prev = 0;
+    if (base > 450) base = 450;
     ImDrawList_AddRectFilled(g_dl, V2(x - 2, y - 2), V2(x + w + 2, y + h + 2), 0xff101010, 0, 0);
     for (int c = 0; c < 7; c++) {
         uint32_t v = rd16(k + 2 * c);
         if (v > 450) v = 450;
-        if (v > prev)
-            ImDrawList_AddRectFilled(g_dl, V2(x + w * (float)prev / 450.0f, y), V2(x + w * (float)v / 450.0f, y + h),
-                                     SHARP_COL[c], 0, 0);
+        for (int part = 0; part < 2; part++) {  // (the weapon's own, then what Handicraft adds)
+            uint32_t a0 = prev, a1 = v, lo = part ? base : 0, hi = part ? base + 50 : base;
+            if (a0 < lo) a0 = lo;
+            if (a1 > hi) a1 = hi;
+            if (a1 <= a0) continue;
+            ImU32 col = part ? (SHARP_COL[c] & 0x00ffffff) | 0x60000000 : SHARP_COL[c];
+            ImDrawList_AddRectFilled(g_dl, V2(x + w * (float)a0 / 450.0f, y), V2(x + w * (float)a1 / 450.0f, y + h), col, 0, 0);
+        }
         if (v > prev) prev = v;
     }
-    float m = x + w * 400.0f / 450.0f;  // (the last 50: what Handicraft adds)
-    ImDrawList_AddLine(g_dl, V2(m, y - 2), V2(m, y + h + 2), 0xc0ffffff, 1.0f);
 }
 static void slots_draw(float x, float cy, int n) {  // (the game's: a ring a slot, a dash none)
     float r = g_fs * 0.32f;
@@ -1087,8 +1094,8 @@ static void draw_weapon_card(float x0, float y0, float x1, float y1, int w, int 
         }
         y += g_fs * 1.2f;
         if (!gun) {
-            text_o(x, y, 0.95f, COL_HEAD, "베는맛");
-            sharpness_bar(xv, y + g_fs * 0.25f, xr - xv, g_fs * 0.55f, e[6]);
+            text_o(x, y, 0.95f, COL_HEAD, "예리도");
+            sharpness_bar(xv, y + g_fs * 0.25f, xr - xv, g_fs * 0.55f, e[6], e[7]);
             y += g_fs * 1.2f;
             text_o(x, y, 0.95f, COL_HEAD, "슬롯");
             slots_draw(xv, y + g_fs * 0.55f, e[LEVEL_STRIDE[g_type] - 1]);
@@ -1474,14 +1481,14 @@ static void draw_confirm(float W, float H) {
     Buf b = {line, 0, sizeof line};
     float x = x0 + g_fs * 1.0f, xr = x1 - g_fs * 1.0f, y = y0 + g_fs * 0.7f;
     // the title row: what is made
-    int rare = 1, atk = -1, slots = 0, sharp = -1, cost = -1, piece = g_conf_piece;
+    int rare = 1, atk = -1, slots = 0, sharp = -1, sharp_step = 0, cost = -1, piece = g_conf_piece;
     const uint8_t *mats = NULL;
     int n = 0, stride = 4;
     if (g_conf_kind == 0) {
         const uint8_t *e1 = level_of((uint32_t)g_conf_id, 1), *b0 = base_of((uint32_t)g_conf_id), *c = create_of((uint32_t)g_conf_id);
         bool gun = gunner(g_type);
         rare = g_w[g_conf_id].rare, atk = e1 ? (int)(gun ? rd16(e1 + 6) : rd16(e1 + 8)) : -1;
-        slots = e1 && !gun ? e1[LEVEL_STRIDE[g_type] - 1] : 0, sharp = e1 && !gun ? e1[6] : -1;
+        slots = e1 && !gun ? e1[LEVEL_STRIDE[g_type] - 1] : 0, sharp = e1 && !gun ? e1[6] : -1, sharp_step = e1 ? e1[7] : 0;
         cost = b0 ? (int)rd32(b0 + 0xc) : -1, mats = c ? c + 6 : NULL, n = 4;
         weapon_name(g_type, (uint32_t)g_conf_id, 0, nm, sizeof nm);
     } else {
@@ -1509,8 +1516,8 @@ static void draw_confirm(float W, float H) {
     slots_draw(x + (xr - x) * 0.5f + g_fs * 2.6f, y + g_fs * 0.6f, slots);
     y += g_fs * 1.4f;
     if (sharp >= 0) {
-        text_o(x, y, 1.0f, blue, "베는맛");
-        sharpness_bar(x + g_fs * 5.0f, y + g_fs * 0.35f, (xr - x) * 0.6f, g_fs * 0.55f, (uint32_t)sharp);
+        text_o(x, y, 1.0f, blue, "예리도");
+        sharpness_bar(x + g_fs * 5.0f, y + g_fs * 0.35f, (xr - x) * 0.6f, g_fs * 0.55f, (uint32_t)sharp, (uint32_t)sharp_step);
         y += g_fs * 1.4f;
     }
     ImDrawList_AddLine(g_dl, V2(x0 + 4, y), V2(x1 - 4, y), COL_TEAL, 2.0f);
