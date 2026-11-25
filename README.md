@@ -26,7 +26,7 @@
 ## 설치
 
 1. MHXX Recomp **0.10.14 이상**이 필요합니다.
-2. 릴리즈의 압축 파일을 풀어 `mods` 폴더에 넣습니다:
+2. 릴리즈의 압축 파일을 **포트 폴더(MHXX Recomp.exe가 있는 곳)에 그대로** 풉니다. 이렇게 들어갑니다:
    `mods/mhxx-smithy-tree/romfs/nativeNX/plugins/mhxx_smithy_tree.nro`
 
 ## 알려진 한계
