@@ -291,10 +291,11 @@ static void read_box(void) {
 static uint8_t g_owned[TAGS][2048 / 8];
 static bool g_owned_ok;
 static uint32_t g_acq;  // (the flags' address, 0: unknown)
+static uint32_t g_equip_at;
 static void read_equip(void) {
-    static uint32_t at;
+    uint32_t at = g_equip_at;
     if (at && g_frame - at < 30) return;
-    at = g_frame | 1;
+    g_equip_at = g_frame | 1;
     memset(g_owned, 0, sizeof g_owned);
     g_owned_ok = false;
     uint32_t pb = mhxx_gu_data(0x1856fe8), ps = mhxx_gu_data(0x1897f78), pa = mhxx_gu_data(0x18583a8);
@@ -1537,6 +1538,7 @@ static bool confirm_step(float W, float H, uint16_t state) {
         g_conf = 3, g_conf_t = g_time;
     } else if (g_conf == 3) {
         if (state == g_conf_state && g_time - g_conf_t >= 0.8f) {
+            g_equip_at = 0;  // (read it now: what was just made)
             read_equip();
             bool now = g_conf_kind == 0 ? owned(g_type + 7, (uint32_t)g_conf_id) : owned(g_conf_piece + 1, (uint32_t)g_conf_id);
             conf_log(now && !g_conf_had ? "made" : "back on the list", state);
