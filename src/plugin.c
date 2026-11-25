@@ -43,7 +43,7 @@
 #define CIMGUI_DEFINE_ENUMS_AND_STRUCTS
 #include "cimgui.h"
 
-#define VERSION "0.12.0"
+#define VERSION "0.12.1"
 
 // ------------------------------------------------------------------ the little of libc it needs (no libc here; hidden:
 // not offered to other plugins)
@@ -594,50 +594,53 @@ static float text_w(const char *s, float scale) {  // (measured at the font's si
 }
 static void text_r(float xr, float y, float scale, ImU32 col, const char *s) { text_o(xr - text_w(s, scale), y, scale, col, s); }
 
-#define COL_TEAL 0xff7a7a2c
-#define COL_GOLD 0xff38c8f0
-#define COL_RED 0xff1010c0
-#define COL_TAN 0xff7ea8c4
-#define COL_TAN_DARK 0xf0688ea8
-#define COL_HEAD 0xff32c0fa  // (headings: the game's orange)
+// MHXX's own look (its smithy list and info panels): maroon lists with a gold bar on the chosen row, navy info panels
+// with azure labels, black title boxes with blue ends, teal edges with small gold corner hooks
+#define COL_TEAL 0xff9a8a3a
+#define COL_GOLD 0xff30c0f0
+#define COL_RED 0xf0080808       // (title boxes: black)
+#define COL_TAN 0xe628190a       // (info panels: navy)
+#define COL_TAN_DARK 0xe6201408
+#define COL_HEAD 0xffff9a30      // (labels and headings: the game's azure)
 #define COL_HAVE 0xff40e060
 #define COL_LACK 0xff4848ff
+#define COL_LIST 0xe816163c      // (lists: maroon)
+#define COL_LIST_HEAD 0xff1e1e64
+#define COL_SEL 0xe028a0c8       // (the chosen row: gold)
 
-static void hooks(float x0, float y0, float x1, float y1) {  // (the gold corner hooks of the game's frames)
-    float k = g_fs * 0.42f;
-    ImU32 g = COL_GOLD;
+static void hooks(float x0, float y0, float x1, float y1) {  // (the game's small gold corner hooks)
+    float k = g_fs * 0.32f;
     float c[4][2] = {{x0, y0}, {x1, y0}, {x0, y1}, {x1, y1}};
     for (int i = 0; i < 4; i++) {
         float x = c[i][0], y = c[i][1];
         ImDrawList_AddRectFilled(g_dl, V2(x - k, y - k), V2(x + k, y + k), 0xff101010, 0, 0);
-        ImDrawList_AddRect(g_dl, V2(x - k, y - k), V2(x + k, y + k), g, 0, 2.0f, 0);
-        ImDrawList_AddRectFilled(g_dl, V2(x - k * 0.35f, y - k * 0.35f), V2(x + k * 0.35f, y + k * 0.35f), g, 0, 0);
+        ImDrawList_AddRect(g_dl, V2(x - k, y - k), V2(x + k, y + k), COL_GOLD, 0, 1.5f, 0);
+        ImDrawList_AddLine(g_dl, V2(x - k * 0.45f, y - k * 0.1f), V2(x + k * 0.45f, y - k * 0.1f), COL_GOLD, 1.5f);
+        ImDrawList_AddLine(g_dl, V2(x + k * 0.45f, y - k * 0.1f), V2(x + k * 0.45f, y + k * 0.45f), COL_GOLD, 1.5f);
     }
 }
-static void frame(float x0, float y0, float x1, float y1, ImU32 fill) {  // (the game's window: teal double edge)
-    ImDrawList_AddRectFilled(g_dl, V2(x0, y0), V2(x1, y1), fill, 0, 0);
-    ImDrawList_AddRect(g_dl, V2(x0, y0), V2(x1, y1), 0xff101010, 0, 5.0f, 0);
-    ImDrawList_AddRect(g_dl, V2(x0, y0), V2(x1, y1), COL_TEAL, 0, 2.5f, 0);
+static void frame(float x0, float y0, float x1, float y1, ImU32 fill) {  // (the game's window: a teal double edge)
+    if (fill) ImDrawList_AddRectFilled(g_dl, V2(x0, y0), V2(x1, y1), fill, 0, 0);
+    ImDrawList_AddRect(g_dl, V2(x0, y0), V2(x1, y1), COL_TEAL, 0, 2.0f, 0);
+    ImDrawList_AddRect(g_dl, V2(x0 + 4, y0 + 4), V2(x1 - 4, y1 - 4), (COL_TEAL & 0x00ffffff) | 0x70000000, 0, 1.0f, 0);
     hooks(x0, y0, x1, y1);
 }
-static void red_bar(float x0, float y0, float x1, float y1) {  // (the game's title bar: red, blue/red ends, gold brackets)
-    float e = g_fs * 0.55f, b = g_fs * 0.35f;
+static void red_bar(float x0, float y0, float x1, float y1) {  // (the game's title box: black, blue bars at its ends)
+    float e = g_fs * 0.22f;
     ImDrawList_AddRectFilled(g_dl, V2(x0, y0), V2(x1, y1), COL_RED, 0, 0);
     for (int side = 0; side < 2; side++) {
-        float xa = side ? x1 - e : x0, xb = side ? x1 : x0 + e;
-        ImDrawList_AddRectFilled(g_dl, V2(xa, y0), V2(xb, y1), 0xffb02818, 0, 0);
-        ImDrawList_AddRectFilled(g_dl, V2(xa + e * 0.35f, y0), V2(xb - e * 0.35f, y1), COL_RED, 0, 0);
-        float bx = side ? x1 - e - b * 1.2f : x0 + e + b * 0.2f;
-        ImDrawList_AddLine(g_dl, V2(bx, y0 + 3), V2(bx + b, y0 + 3), COL_GOLD, 2.0f);
-        ImDrawList_AddLine(g_dl, V2(bx + (side ? b : 0), y0 + 3), V2(bx + (side ? b : 0), y1 - 3), COL_GOLD, 2.0f);
-        ImDrawList_AddLine(g_dl, V2(bx, y1 - 3), V2(bx + b, y1 - 3), COL_GOLD, 2.0f);
+        float xa = side ? x1 - e * 3 : x0 + e;
+        ImDrawList_AddRectFilled(g_dl, V2(xa, y0 + 3), V2(xa + e, y1 - 3), 0xffe8641e, 0, 0);
+        for (float yy = y0 + 4; yy < y1 - 4; yy += g_fs * 0.3f)  // (its dotted line beside)
+            ImDrawList_AddRectFilled(g_dl, V2(xa + (side ? -e : e * 1.6f), yy), V2(xa + (side ? -e * 0.5f : e * 2.1f), yy + g_fs * 0.12f),
+                                     0xffe8641e, 0, 0);
     }
+    ImDrawList_AddLine(g_dl, V2(x0, y1), V2(x1, y1), COL_TEAL, 1.5f);
 }
 static void tan_box(float x0, float y0, float x1, float y1) {
     ImDrawList_AddRectFilled(g_dl, V2(x0, y0), V2(x1, y1), COL_TAN, 0, 0);
-    ImDrawList_AddRect(g_dl, V2(x0, y0), V2(x1, y1), 0xff4a6a80, 0, 1.0f, 0);
 }
-static void tan_rule(float x0, float x1, float y) { ImDrawList_AddLine(g_dl, V2(x0, y), V2(x1, y), 0x80405870, 1.0f); }
+static void tan_rule(float x0, float x1, float y) { ImDrawList_AddLine(g_dl, V2(x0, y), V2(x1, y), 0x40ffffff, 1.0f); }
 
 // a weapon type's glyph (a blade), an armor piece's: shapes, in a colour
 static void shape_weapon(float cx, float cy, float h, ImU32 c) {
@@ -972,11 +975,11 @@ static void weapon_input(void) {
 }
 
 static void draw_weapon_tree(float x0, float y0, float x1, float y1) {
-    frame(x0, y0, x1, y1, 0xff141416);
+    frame(x0, y0, x1, y1, COL_LIST);
     char line[96], nm[96];
     Buf b = {line, 0, sizeof line};
     float hy = y0 + g_fs * 0.35f, hh = g_fs * 1.25f;  // (the rarities' header)
-    ImDrawList_AddRectFilled(g_dl, V2(x0 + 3, hy - g_fs * 0.1f), V2(x1 - 3, hy + hh), 0xff24244e, 0, 0);
+    ImDrawList_AddRectFilled(g_dl, V2(x0 + 3, hy - g_fs * 0.1f), V2(x1 - 3, hy + hh), COL_LIST_HEAD, 0, 0);
     float namew = (x1 - x0) * 0.30f, gx0 = x0 + namew, gx1 = x1 - g_fs, top = hy + hh + g_fs * 0.2f;
     float colw = (gx1 - gx0) / (float)(g_ncols < 5 ? 5 : g_ncols), rowh = g_fs * 2.35f, hs = g_fs * 0.8f;
     for (int r = 1; r <= g_ncols; r++) {
@@ -1003,11 +1006,11 @@ static void draw_weapon_tree(float x0, float y0, float x1, float y1) {
         if (cy < top - rowh || cy > y1 + rowh) continue;
         bool sel = w == g_cw;
         ImDrawList_AddRectFilled(g_dl, V2(x0 + 3, cy - rowh * 0.5f + 1), V2(x1 - 3, cy + rowh * 0.5f - 1),
-                                 sel ? 0x5030a0c0 : (i & 1) ? 0x18ffffff : 0x0cffffff, 0, 0);
+                                 sel ? COL_SEL : (i & 1) ? 0x10ffffff : 0x00000000, 0, 0);
         if (sel) ImDrawList_AddRectFilled(g_dl, V2(x0 + 3, cy - rowh * 0.5f + 1), V2(x0 + 7, cy + rowh * 0.5f - 1), COL_GOLD, 0, 0);
         weapon_name(g_type, (uint32_t)w, 0, nm, sizeof nm);
         ImDrawList_PushClipRect(g_dl, V2(x0 + 3, cy - rowh), V2(gx0 - g_fs * 0.3f, cy + rowh), true);
-        text_o(x0 + g_fs * 0.8f, cy - g_fs * 0.68f, 1.3f, sel ? 0xff70f0ff : hidden_w(w) ? 0xff909090 : 0xffeeeeee, nm);
+        text_o(x0 + g_fs * 0.8f, cy - g_fs * 0.68f, 1.3f, sel ? 0xffffffff : hidden_w(w) ? 0xff909090 : 0xffeeeeee, nm);
         ImDrawList_PopClipRect(g_dl);
     }
     for (int i = 0; i < g_nrows; i++) {  // (lines: down from the parent, across to the weapon, its level on a tag)
@@ -1074,7 +1077,7 @@ static void draw_weapon_card(float x0, float y0, float x1, float y1, int w, int 
     y += g_fs * 0.25f;
     if (e) {
         bool gun = gunner(g_type);
-        text_o(x, y, 0.95f, 0xfff4f4f4, "공격력");
+        text_o(x, y, 0.95f, COL_HEAD, "공격력");
         b.n = 0, put_int(&b, gun ? (int)rd16(e + 6) : (int)rd16(e + 8));
         text_o(xv, y, 0.95f, 0xfff4f4f4, line);
         if (!gun) {
@@ -1084,10 +1087,10 @@ static void draw_weapon_card(float x0, float y0, float x1, float y1, int w, int 
         }
         y += g_fs * 1.2f;
         if (!gun) {
-            text_o(x, y, 0.95f, 0xfff4f4f4, "예리도");
+            text_o(x, y, 0.95f, COL_HEAD, "베는맛");
             sharpness_bar(xv, y + g_fs * 0.25f, xr - xv, g_fs * 0.55f, e[6]);
             y += g_fs * 1.2f;
-            text_o(x, y, 0.95f, 0xfff4f4f4, "슬롯");
+            text_o(x, y, 0.95f, COL_HEAD, "슬롯");
             slots_draw(xv, y + g_fs * 0.55f, e[LEVEL_STRIDE[g_type] - 1]);
             int el = b0 ? b0[0x11] : 0;
             if (el > 0 && el < 10 && e[12]) {
@@ -1209,10 +1212,10 @@ static void armor_input(void) {
 }
 
 static void draw_armor_grid(float x0, float y0, float x1, float y1) {
-    frame(x0, y0, x1, y1, 0xff141416);
+    frame(x0, y0, x1, y1, COL_LIST);
     static const char *const RANK[3] = {"하위", "상위", "G급"};
     float ty = y0 + g_fs * 0.35f, th = g_fs * 1.3f;
-    ImDrawList_AddRectFilled(g_dl, V2(x0 + 3, ty - g_fs * 0.1f), V2(x1 - 3, ty + th), 0xff24244e, 0, 0);
+    ImDrawList_AddRectFilled(g_dl, V2(x0 + 3, ty - g_fs * 0.1f), V2(x1 - 3, ty + th), COL_LIST_HEAD, 0, 0);
     for (int r = 0; r < 3; r++) {
         float tx = x0 + g_fs * 0.6f + r * g_fs * 5.2f;
         bool on = r == g_arank;
@@ -1237,12 +1240,12 @@ static void draw_armor_grid(float x0, float y0, float x1, float y1) {
         uint32_t s = g_arow_of[i];
         bool sel = i == g_arow;
         ImDrawList_AddRectFilled(g_dl, V2(x0 + 3, cy - rowh * 0.5f + 1), V2(x1 - 3, cy + rowh * 0.5f - 1),
-                                 sel ? 0x5030a0c0 : (i & 1) ? 0x18ffffff : 0x0cffffff, 0, 0);
+                                 sel ? COL_SEL : (i & 1) ? 0x10ffffff : 0x00000000, 0, 0);
         int first = 0;
         while (first < 4 && !acreate(s, first)) first++;
         armor_name(s, first, nm, sizeof nm);
         ImDrawList_PushClipRect(g_dl, V2(x0 + 3, cy - rowh), V2(gx - g_fs * 0.3f, cy + rowh), true);
-        text_o(x0 + g_fs * 0.8f, cy - g_fs * 0.62f, 1.15f, sel ? 0xff70f0ff : 0xffeeeeee, nm);
+        text_o(x0 + g_fs * 0.8f, cy - g_fs * 0.62f, 1.15f, 0xffeeeeee, nm);
         ImDrawList_PopClipRect(g_dl);
         const uint8_t *a = aser(s);
         int rare = a ? a[0x67] + 1 : 1;
@@ -1289,7 +1292,7 @@ static void draw_armor_card(float x0, float y0, float x1, float y1) {
     y += g_fs * 0.25f;
     b.n = 0, put(&b, "방어력 "), put_int(&b, def), put(&b, " - "), put_int(&b, max);
     text_o(x, y, 0.95f, 0xfff4f4f4, line);
-    text_o(x + (xr - x) * 0.55f, y, 0.95f, 0xfff4f4f4, "슬롯");
+    text_o(x + (xr - x) * 0.55f, y, 0.95f, COL_HEAD, "슬롯");
     slots_draw(x + (xr - x) * 0.55f + g_fs * 2.2f, y + g_fs * 0.55f, t[5 + p]);
     y += g_fs * 1.25f;
     static const char *const RES[5] = {"불", "물", "번개", "얼음", "용"};
@@ -1338,8 +1341,8 @@ static void wish_row(float x0, float x1, float y, float h, bool sel) {
 static void draw_wishlist(float W, float H) {
     float x0 = W * 0.155f, x1 = W * 0.845f, y0 = H * 0.055f, y1 = H * 0.935f;
     ImDrawList_AddRectFilled(g_dl, V2(0, 0), V2(W, H), 0x90000000, 0, 0);
-    frame(x0, y0, x1, y1, 0xf0101012);
-    ImDrawList_AddRectFilled(g_dl, V2(x0 + 3, y0 + 3), V2(x1 - 3, y0 + g_fs * 1.5f), 0xff30305a, 0, 0);
+    frame(x0, y0, x1, y1, COL_TAN);
+    ImDrawList_AddRectFilled(g_dl, V2(x0 + 3, y0 + 3), V2(x1 - 3, y0 + g_fs * 1.5f), COL_LIST_HEAD, 0, 0);
     text_o((x0 + x1) * 0.5f - text_w("위시리스트", 1.0f) * 0.5f, y0 + g_fs * 0.2f, 1.0f, 0xfff0f0f0, "위시리스트");
     float tw = (x1 - x0 - g_fs * 4) * 0.5f, ty = y0 + g_fs * 2.0f, th = g_fs * 2.0f;
     for (int k = 0; k < 2; k++) {
@@ -1355,9 +1358,9 @@ static void draw_wishlist(float W, float H) {
     float y = ty + th + g_fs * 0.8f, rh = g_fs * 2.2f;
     if (g_wish_tab == 0) {
         float lx0 = x0 + g_fs * 1.2f, lx1 = x0 + (x1 - x0) * 0.47f, rx0 = lx1 + g_fs, rx1 = x1 - g_fs * 1.2f;
-        ImDrawList_AddRectFilled(g_dl, V2(lx0, y), V2(lx1, y + g_fs * 1.4f), 0xff2a2a5a, 0, 0);
+        ImDrawList_AddRectFilled(g_dl, V2(lx0, y), V2(lx1, y + g_fs * 1.4f), COL_LIST_HEAD, 0, 0);
         text_o(lx0 + g_fs * 0.5f, y + g_fs * 0.2f, 0.95f, 0xfff0f0f0, "장비 목록");
-        ImDrawList_AddRectFilled(g_dl, V2(rx0, y), V2(rx1, y + g_fs * 1.4f), 0xff2a2a5a, 0, 0);
+        ImDrawList_AddRectFilled(g_dl, V2(rx0, y), V2(rx1, y + g_fs * 1.4f), COL_LIST_HEAD, 0, 0);
         text_o(rx0 + g_fs * 0.5f, y + g_fs * 0.2f, 0.95f, 0xfff0f0f0, "필요 소재");
         y += g_fs * 1.9f;
         if (!g_nwish) text_o(lx0, y, 1.0f, 0xffd0d0d0, "비어 있어요: 트리에서 ZR(하나) / ZL(경로 전체)로 담아요");
@@ -1466,7 +1469,7 @@ static bool g_conf_had;
 static void draw_confirm(float W, float H) {
     ImDrawList_AddRectFilled(g_dl, V2(W * 0.262f, H * 0.1f), V2(W, H * 0.9f), 0xb0000000, 0, 0);
     float x0 = W * 0.30f, x1 = W * 0.80f, y0 = H * 0.20f, y1 = H * 0.72f;
-    frame(x0, y0, x1, y1, 0xff2a1e12);
+    frame(x0, y0, x1, y1, COL_TAN);
     char nm[96], line[160];
     Buf b = {line, 0, sizeof line};
     float x = x0 + g_fs * 1.0f, xr = x1 - g_fs * 1.0f, y = y0 + g_fs * 0.7f;
