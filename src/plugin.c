@@ -43,7 +43,7 @@
 #define CIMGUI_DEFINE_ENUMS_AND_STRUCTS
 #include "cimgui.h"
 
-#define VERSION "0.11.2"
+#define VERSION "0.12.0"
 
 // ------------------------------------------------------------------ the little of libc it needs (no libc here; hidden:
 // not offered to other plugins)
@@ -640,13 +640,13 @@ static void tan_box(float x0, float y0, float x1, float y1) {
 static void tan_rule(float x0, float x1, float y) { ImDrawList_AddLine(g_dl, V2(x0, y), V2(x1, y), 0x80405870, 1.0f); }
 
 // a weapon type's glyph (a blade), an armor piece's: shapes, in a colour
-static void glyph_weapon(float cx, float cy, float h, ImU32 c) {
+static void shape_weapon(float cx, float cy, float h, ImU32 c) {
     ImDrawList_AddLine(g_dl, V2(cx - h * 0.55f, cy + h * 0.55f), V2(cx + h * 0.6f, cy - h * 0.6f), c, g_fs * 0.28f);
     ImDrawList_AddTriangleFilled(g_dl, V2(cx + h * 0.6f, cy - h * 0.6f), V2(cx + h * 0.15f, cy - h * 0.45f),
                                  V2(cx + h * 0.45f, cy - h * 0.15f), c);
     ImDrawList_AddLine(g_dl, V2(cx - h * 0.62f, cy + h * 0.2f), V2(cx - h * 0.2f, cy + h * 0.62f), 0xffe0e0e0, g_fs * 0.16f);
 }
-static void glyph_armor(float cx, float cy, float h, int piece, ImU32 c) {
+static void shape_armor(float cx, float cy, float h, int piece, ImU32 c) {
     float w = h * 0.55f;
     switch (piece) {
     case 0:  // head
@@ -674,6 +674,44 @@ static void glyph_armor(float cx, float cy, float h, int piece, ImU32 c) {
         break;
     }
 }
+// The game's own icons (its icon atlas, from the player's files each run: the port's mhxx_game_texture), grey, drawn
+// in a colour as the game does (the rarity's); the shapes above until it is there. docs/icons.md: the cells.
+int mhxx_game_texture(const char *arc, const char *name, uint32_t *size);
+uint64_t mhxx_game_texture_id(int handle);
+static int g_icons;
+static uint64_t g_icon_id;
+static void icons_frame(void) {
+    static bool tried;
+    if (!tried) {
+        tried = true;
+        uint32_t wh = 0;
+        g_icons = mhxx_game_texture("nativeNX/arc/resident.arc", "GUI\\99_texture\\HD_cmn_icon_GSM_NOMIP", &wh);
+        char l[96];
+        Buf b = {l, 0, sizeof l};
+        put(&b, "[SmithyTree] the game's icons: "), put(&b, g_icons ? "loaded " : "not found "), put_int(&b, (int)(wh & 0xffff)),
+            put(&b, "x"), put_int(&b, (int)(wh >> 16));
+        log_line(l);
+    }
+    g_icon_id = g_icons ? mhxx_game_texture_id(g_icons) : 0;
+}
+static bool icon(int r, int c, float cx, float cy, float h, ImU32 col) {  // (cell r, c of the 48 px set; 512 x 1024)
+    if (!g_icon_id) return false;
+    ImTextureRef_c ref = {NULL, g_icon_id};
+    float u0 = (float)(c * 48) / 512.0f, v0 = (float)(416 + r * 48) / 1024.0f, s = h * 1.12f;
+    ImDrawList_AddImage(g_dl, ref, V2(cx - s, cy - s), V2(cx + s, cy + s), V2(u0, v0), V2(u0 + 48.0f / 512.0f, v0 + 48.0f / 1024.0f), col);
+    return true;
+}
+static const uint8_t WEAPON_ICON[15][2] = {{5, 5}, {5, 7}, {5, 9}, {6, 1}, {6, 5}, {0, 0}, {6, 3}, {5, 6},
+                                           {6, 7}, {6, 2}, {6, 6}, {5, 8}, {6, 0}, {6, 8}, {6, 9}};
+static const uint8_t ARMOR_ICON[5][2] = {{7, 0}, {7, 1}, {7, 3}, {7, 2}, {7, 4}};
+static void glyph_weapon_t(int type, float cx, float cy, float h, ImU32 c) {
+    if (type < 0 || type >= 15 || type == 5 || !icon(WEAPON_ICON[type][0], WEAPON_ICON[type][1], cx, cy, h, c)) shape_weapon(cx, cy, h, c);
+}
+static void glyph_weapon(float cx, float cy, float h, ImU32 c) { glyph_weapon_t(g_type, cx, cy, h, c); }
+static void glyph_armor(float cx, float cy, float h, int piece, ImU32 c) {
+    if (piece < 0 || piece > 4 || !icon(ARMOR_ICON[piece][0], ARMOR_ICON[piece][1], cx, cy, h, c)) shape_armor(cx, cy, h, piece, c);
+}
+
 static void icon_cell(float cx, float cy, float h, bool sel, bool on) {  // (a dark tile, a gold edge when chosen)
     ImDrawList_AddRectFilled(g_dl, V2(cx - h, cy - h), V2(cx + h, cy + h), on ? 0xff2a2a2a : 0xff1a1a1a, g_fs * 0.12f, 0);
     ImDrawList_AddRect(g_dl, V2(cx - h, cy - h), V2(cx + h, cy + h), sel ? 0xff30d8ff : on ? 0xff8a9aa0 : 0xff4a4a4a,
@@ -1332,7 +1370,7 @@ static void draw_wishlist(float W, float H) {
             text_o(lx0 + g_fs * 0.8f, ry + g_fs * 0.4f, 0.95f, 0xfff0f0f0, line);
             const Wish *w = &g_wish[i];
             if (w->kind) glyph_armor(lx0 + g_fs * 2.6f, ry + rh * 0.45f, g_fs * 0.6f, w->type, 0xff60d0a0);
-            else glyph_weapon(lx0 + g_fs * 2.6f, ry + rh * 0.45f, g_fs * 0.6f, 0xffe0e0e0);
+            else glyph_weapon_t(w->type, lx0 + g_fs * 2.6f, ry + rh * 0.45f, g_fs * 0.6f, 0xffe0e0e0);
             text_o(lx0 + g_fs * 3.6f, ry + g_fs * 0.4f, 0.95f, 0xfff0f0f0, w->name);
             int pc = wish_percent(w);
             b.n = 0, put_int(&b, pc), put(&b, "%");
@@ -1644,6 +1682,7 @@ void forge_onImGuiFreeRender(void) {
     mhxx_input_capture(150);  // (the controller is the screen's while it is up)
     read_box();
     read_equip();
+    icons_frame();
     log_box_once();
     if (g_have_ok) wish_popups();
     if (g_conf) {
