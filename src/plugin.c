@@ -43,7 +43,7 @@
 #define CIMGUI_DEFINE_ENUMS_AND_STRUCTS
 #include "cimgui.h"
 
-#define VERSION "0.12.2"
+#define VERSION "0.13.0"
 
 // ------------------------------------------------------------------ the little of libc it needs (no libc here; hidden:
 // not offered to other plugins)
@@ -83,6 +83,7 @@ const char *forge_fs_getRomFsMountPoint(void);
 uint32_t forge_mem_getMainTextAddr(void);
 ForgeHook forge_hook_create(void *target, void *detour, void **original);
 uint32_t mhxx_resource_find(const char *path);
+uint32_t mhxx_resource_find_after(const char *path, uint32_t after);
 uint32_t mhxx_hangul_decode(const char *in, char *out, uint32_t size);
 uint32_t mhxx_gu_data(uint32_t gu_offset);
 
@@ -154,12 +155,14 @@ static uint32_t find_res(uint32_t *slot, uint32_t *tried, const char *path) {
     if (*slot) return *slot;
     if (*tried && g_frame - *tried < 180) return 0;  // (a heap search: not every frame)
     *tried = g_frame | 1;
-    *slot = mhxx_resource_find(path);
+    uint32_t r = mhxx_resource_find(path);
+    for (int k = 0; k < 8 && r && !G32(r + 0x88); k++) r = mhxx_resource_find_after(path, r);  // (past empty ones)
+    *slot = r && G32(r + 0x88) ? r : 0;
     char l[200];
     Buf b = {l, 0, sizeof l};
     put(&b, "[SmithyTree] "), put(&b, path), put(&b, *slot ? ": found" : ": not loaded (yet)");
     if (*slot) {
-        uint32_t r = *slot;
+        r = *slot;
         put(&b, ", "), put_int(&b, (int)G32(r + 0x88)), put(&b, " strings, "), put_int(&b, (int)G32(r + 0x90)),
             put(&b, " bytes, text "), put_hex(&b, G32(r + 0x94)), put(&b, " pointers "), put_hex(&b, G32(r + 0x98));
         for (int o = 0x80; o < 0xa0; o += 4) put(&b, " "), put_hex(&b, G32(r + (uint32_t)o));
@@ -1175,7 +1178,7 @@ static int rank_of(uint32_t s) {
 static void armor_rows(int rank) {
     g_narank = 0;
     for (int i = 0; i < g_narows; i++)
-        if (rank_of(g_arows[i]) == rank) g_arow_of[g_narank++] = g_arows[i];
+        if (rank_of(g_arows[i]) == rank && acreate(g_arows[i], g_apiece)) g_arow_of[g_narank++] = g_arows[i];  // (the piece the game's list is for)
 }
 static void armor_from_game(void) {
     static uint16_t from_id, from_cat;
@@ -1188,8 +1191,6 @@ static void armor_from_game(void) {
 }
 static void armor_input(void) {
     int dir = pad_dir();
-    if (dir == 1 && g_apiece < 4) g_apiece++;
-    if (dir == 2 && g_apiece > 0) g_apiece--;
     if (dir == 3 && g_arow > 0) g_arow--;
     if (dir == 4 && g_arow + 1 < g_narank) g_arow++;
     if (pressed(B_L)) {  // (L: the rank tabs)
@@ -1248,28 +1249,33 @@ static void draw_armor_grid(float x0, float y0, float x1, float y1) {
         bool sel = i == g_arow;
         ImDrawList_AddRectFilled(g_dl, V2(x0 + 3, cy - rowh * 0.5f + 1), V2(x1 - 3, cy + rowh * 0.5f - 1),
                                  sel ? COL_SEL : (i & 1) ? 0x10ffffff : 0x00000000, 0, 0);
-        int first = 0;
-        while (first < 4 && !acreate(s, first)) first++;
-        armor_name(s, first, nm, sizeof nm);
-        ImDrawList_PushClipRect(g_dl, V2(x0 + 3, cy - rowh), V2(gx - g_fs * 0.3f, cy + rowh), true);
-        text_o(x0 + g_fs * 0.8f, cy - g_fs * 0.62f, 1.15f, 0xffeeeeee, nm);
-        ImDrawList_PopClipRect(g_dl);
+        int p = g_apiece;
+        armor_name(s, p, nm, sizeof nm);
         const uint8_t *a = aser(s);
         int rare = a ? a[0x67] + 1 : 1;
-        for (int p = 0; p < 5; p++) {
-            float cx = gx + cw * ((float)p + 0.5f);
-            if (!acreate(s, p)) {
-                ImDrawList_AddLine(g_dl, V2(cx - hs * 0.5f, cy), V2(cx + hs * 0.5f, cy), 0x80c0c0c0, 2.0f);
-                continue;
-            }
-            bool on = sel && p == g_apiece;
-            icon_cell(cx, cy, hs, on, true);
-            glyph_armor(cx, cy, hs * 0.85f, p, rare_colour(rare));
-            if (owned(p + 1, s)) {
-                ImDrawList_AddLine(g_dl, V2(cx + hs * 0.35f, cy - hs * 0.75f), V2(cx + hs * 0.6f, cy - hs * 0.45f), 0xff40e060, 3.0f);
-                ImDrawList_AddLine(g_dl, V2(cx + hs * 0.6f, cy - hs * 0.45f), V2(cx + hs * 1.05f, cy - hs * 1.1f), 0xff40e060, 3.0f);
-            }
-            if (wish_find(1, p, (int)s) >= 0) ImDrawList_AddCircleFilled(g_dl, V2(cx + hs, cy - hs), g_fs * 0.22f, 0xff30d0ff, 10);
+        float ix = x0 + g_fs * 1.6f;
+        icon_cell(ix, cy, hs, sel, true);
+        glyph_armor(ix, cy, hs * 0.85f, p, rare_colour(rare));
+        if (owned(p + 1, s)) {
+            ImDrawList_AddLine(g_dl, V2(ix + hs * 0.35f, cy - hs * 0.75f), V2(ix + hs * 0.6f, cy - hs * 0.45f), 0xff40e060, 3.0f);
+            ImDrawList_AddLine(g_dl, V2(ix + hs * 0.6f, cy - hs * 0.45f), V2(ix + hs * 1.05f, cy - hs * 1.1f), 0xff40e060, 3.0f);
+        }
+        if (wish_find(1, p, (int)s) >= 0) ImDrawList_AddCircleFilled(g_dl, V2(ix + hs, cy - hs), g_fs * 0.22f, 0xff30d0ff, 10);
+        ImDrawList_PushClipRect(g_dl, V2(x0 + 3, cy - rowh), V2(gx + cw * 1.6f, cy + rowh), true);
+        text_o(ix + hs + g_fs * 0.7f, cy - g_fs * 0.62f, 1.15f, 0xffeeeeee, nm);
+        ImDrawList_PopClipRect(g_dl);
+        if (a) {  // (its rarity, defense and slots, as the game's list shows its price)
+            const uint8_t *t = a + 0x67;
+            int def = t[3], max = def;
+            if (t[2] < g_nabuild)
+                for (int k = 0; k + 1 < t[1] && k < 20; k++) max += g_abuild[8 + t[2] * 20 + k];
+            char line[48];
+            Buf b = {line, 0, sizeof line};
+            put(&b, "RARE "), put_int(&b, rare);
+            text_o(gx + cw * 1.7f, cy - g_fs * 0.5f, 0.9f, rare_colour(rare), line);
+            b.n = 0, put(&b, "방어 "), put_int(&b, def), put(&b, "-"), put_int(&b, max);
+            text_o(gx + cw * 2.6f, cy - g_fs * 0.5f, 0.9f, 0xffeeeeee, line);
+            slots_draw(gx + cw * 4.0f, cy, t[5 + p]);
         }
     }
     ImDrawList_PopClipRect(g_dl);
@@ -1441,7 +1447,7 @@ static void key_hint(float x, float y, const char *key, const char *what, float 
 static void bottom(float W, float H, bool weapons) {
     float y = H * 0.885f, x = W * 0.014f;
     ImDrawList_AddRectFilled(g_dl, V2(x - 4, y - 4), V2(W * 0.75f, y + g_fs * 1.35f), 0xc0000000, 0, 0);
-    key_hint(x, y, "십자/스틱", "커서 이동", &x);
+    key_hint(x, y, "십자/스틱", weapons ? "커서 이동" : "위 / 아래", &x);
     key_hint(x, y, "A", "생산 / 강화", &x);
     key_hint(x, y, "ZL", weapons ? "경로 전체 담기" : "세트 전체 담기", &x);
     key_hint(x, y, "ZR", "위시리스트 담기", &x);
@@ -1746,7 +1752,6 @@ void forge_onImGuiFreeRender(void) {
         g_want_id = g_narank ? g_arow_of[g_arow] : -1;
         if (pressed(B_A)) {
             if (g_want_result < 0) toast("이 방어구는 지금 게임 목록에 없어요 (해금 전이거나 다른 부위 / 페이지)");
-            else if (g_apiece != g_now.category - 1) toast("게임 목록은 다른 부위예요: B로 나가서 이 부위를 고른 뒤 만들 수 있어요");
             else if (g_now.screen == 3)
                 g_conf = 1, g_conf_yes = 1, g_conf_kind = 1, g_conf_id = g_arow_of[g_arow], g_conf_piece = g_apiece;
             else {
