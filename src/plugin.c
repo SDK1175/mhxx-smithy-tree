@@ -43,7 +43,7 @@
 #define CIMGUI_DEFINE_ENUMS_AND_STRUCTS
 #include "cimgui.h"
 
-#define VERSION "0.11.1"
+#define VERSION "0.11.2"
 
 // ------------------------------------------------------------------ the little of libc it needs (no libc here; hidden:
 // not offered to other plugins)
@@ -751,21 +751,30 @@ bool forge_input_isPressed(uint32_t button);
 enum { B_A = 0, B_B = 1, B_X = 2, B_Y = 3, B_L = 6, B_R = 7, B_ZL = 8, B_ZR = 9 };
 static bool g_fresh;
 static bool pressed(int b) { return g_fresh && forge_input_isPressed((uint32_t)b); }
-// a direction from the d-pad or either stick: 1 right 2 left 3 up 4 down, repeating while held
+// a direction from the d-pad or either stick: 1 right 2 left 3 up 4 down - one step a press, repeating only when held
+// (in seconds: 0.35 before the first repeat, then one each 0.08 - whatever the frame rate)
+static float g_time;  // (seconds, ImGui's clock)
 static int pad_dir(void) {
-    static int held, prev;
-    if (!g_fresh) return 0;
+    static int prev;
+    static float next;
     int dir = 0;
     if (forge_input_isDown(14) || forge_input_isDown(18) || forge_input_isDown(22)) dir = 1;
     else if (forge_input_isDown(12) || forge_input_isDown(16) || forge_input_isDown(20)) dir = 2;
     else if (forge_input_isDown(13) || forge_input_isDown(17) || forge_input_isDown(21)) dir = 3;
     else if (forge_input_isDown(15) || forge_input_isDown(19) || forge_input_isDown(23)) dir = 4;
-    if (!dir || dir != prev) held = 0;
-    prev = dir;
-    if (!dir) return 0;
-    bool go = held == 0 || (held >= 14 && ((held - 14) & 3) == 0);
-    held++;
-    return go ? dir : 0;
+    if (!dir) {
+        prev = 0;
+        return 0;
+    }
+    if (dir != prev) {  // (a new press: one step now)
+        prev = dir, next = g_time + 0.35f;
+        return dir;
+    }
+    if (g_time >= next) {
+        next = g_time + 0.08f;
+        return dir;
+    }
+    return 0;
 }
 
 static char g_toast[160];
@@ -1411,7 +1420,7 @@ static void bottom(float W, float H, bool weapons) {
 void mhxx_input_press(uint32_t buttons, uint32_t ms);
 static int g_conf, g_conf_yes, g_conf_presses, g_conf_kind, g_conf_id, g_conf_piece;
 static uint16_t g_conf_state;
-static uint32_t g_conf_t;
+static float g_conf_t;
 static bool g_conf_had;
 
 // one window in MHXX's own style (its blue column heads "필요 소재 이름 / 소지수/필요수"), the 3D preview left seen
@@ -1517,26 +1526,26 @@ static bool confirm_step(float W, float H, uint16_t state) {
         if (dir == 1 || dir == 2) g_conf_yes = !g_conf_yes;
         if (pressed(B_B) || (pressed(B_A) && !g_conf_yes)) g_conf = 0;
         else if (pressed(B_A)) {
-            g_conf_state = state, g_conf_t = g_frame, g_conf = 2, g_conf_presses = 0;
+            g_conf_state = state, g_conf_t = g_time, g_conf = 2, g_conf_presses = 0;
             g_conf_had = g_conf_kind == 0 ? owned(g_type + 7, (uint32_t)g_conf_id) : owned(g_conf_piece + 1, (uint32_t)g_conf_id);
             mhxx_input_press(1u << 0, 80);  // (the game's A on its list: its own confirmation)
             conf_log("A on the game's list", state);
         }
-    } else if (g_fresh && g_conf == 2 && g_frame - g_conf_t >= 25) {
+    } else if (g_conf == 2 && g_time - g_conf_t >= 0.5f) {
         conf_log(state != g_conf_state ? "its confirmation is up: Yes" : "no new screen for its confirmation: A (Yes)", state);
         mhxx_input_press(1u << 0, 80);  // (its Yes)
-        g_conf = 3, g_conf_t = g_frame;
-    } else if (g_fresh && g_conf == 3) {
-        if (state == g_conf_state && g_frame - g_conf_t >= 40) {
+        g_conf = 3, g_conf_t = g_time;
+    } else if (g_conf == 3) {
+        if (state == g_conf_state && g_time - g_conf_t >= 0.8f) {
             read_equip();
             bool now = g_conf_kind == 0 ? owned(g_type + 7, (uint32_t)g_conf_id) : owned(g_conf_piece + 1, (uint32_t)g_conf_id);
             conf_log(now && !g_conf_had ? "made" : "back on the list", state);
             toast(now && !g_conf_had ? "생산했어요!" : "생산이 끝났어요 (만들어지지 않았다면 소재나 돈이 모자란 거예요)");
             g_conf = 0, g_have_frame = 0;
-        } else if (state != g_conf_state && g_frame - g_conf_t >= 45) {
+        } else if (state != g_conf_state && g_time - g_conf_t >= 0.9f) {
             if (g_conf_presses < 3) {  // (its messages after: let them go)
                 conf_log("a message: A", state);
-                mhxx_input_press(1u << 0, 80), g_conf_presses++, g_conf_t = g_frame;
+                mhxx_input_press(1u << 0, 80), g_conf_presses++, g_conf_t = g_time;
             } else {  // (something the screen doesn't know: the game's, to the player)
                 conf_log("an unknown screen: the game has the controller", state);
                 g_conf = 0, g_hidden = true;
@@ -1604,6 +1613,7 @@ void forge_onImGuiFreeRender(void) {
     ImGuiIO *io = igGetIO_Nil();
     float W = io->DisplaySize.x, H = io->DisplaySize.y;
     g_dl = igGetForegroundDrawList_Nil(), g_fs = igGetFontSize() * (H > 900 ? H / 900.0f : 1.0f);
+    g_time += io->DeltaTime > 0 && io->DeltaTime < 0.25f ? io->DeltaTime : 0.0f;
     if (g_toast[0] && g_frame - g_toast_frame < 150) {  // (a word for the player, over the game too)
         float w = text_w(g_toast, 1.0f) + g_fs * 2;
         frame((W - w) * 0.5f, H * 0.03f, (W + w) * 0.5f, H * 0.03f + g_fs * 1.9f, 0xf0141416);
