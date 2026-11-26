@@ -43,7 +43,7 @@
 #define CIMGUI_DEFINE_ENUMS_AND_STRUCTS
 #include "cimgui.h"
 
-#define VERSION "0.13.0"
+#define VERSION "0.13.1"
 
 // ------------------------------------------------------------------ the little of libc it needs (no libc here; hidden:
 // not offered to other plugins)
@@ -194,6 +194,13 @@ static bool msg_get(uint32_t r, uint32_t i, char *out, uint32_t cap) {
 #define TYPES 15
 static uint32_t g_res_weapon[TYPES], g_try_weapon[TYPES], g_res_item, g_try_item, g_res_armor, g_try_armor,
     g_res_skill, g_try_skill;
+
+// A quest away and back, the game unloads these and loads them again somewhere else: the addresses found are forgotten
+// each time the smithy opens, and looked for again (else the old place is read: names as #number, or another's bytes).
+static void forget_names(void) {
+    for (int t = 0; t < TYPES; t++) g_res_weapon[t] = g_try_weapon[t] = 0;
+    g_res_item = g_try_item = g_res_armor = g_try_armor = g_res_skill = g_try_skill = 0;
+}
 
 static void item_name(uint32_t id, char *out, uint32_t cap) {
     if (!msg_get(find_res(&g_res_item, &g_try_item, "table\\itemData_jpn"), id * 2, out, cap)) {
@@ -525,6 +532,10 @@ static int g_want_result;   // 1 done, -1 not in the list
 static void smithy_update(uint32_t obj) {
     g_original(obj);
     if (obj < 0x08000000u || (obj & 3)) return;
+    if (g_frame - g_seen_frame > 2) {  // (the smithy opened: the names looked for again)
+        forget_names();
+        log_line("[SmithyTree] the smithy opened: the names' resources looked for again");
+    }
     if (g_want_id >= 0) {
         uint16_t n = G16(obj + 0x1f78);
         g_want_result = -1;
